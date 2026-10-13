@@ -48,11 +48,14 @@
   function sync() { const t = PR.settingsTabs[st.tab]; if (t && t.sync) t.sync(st, dlg()); }
   PR.settingsRender = render;
   function render() {
+    const oldBody = dlg().querySelector(".set-body");
+    const scroll = oldBody ? oldBody.scrollTop : 0;
     const t = PR.settingsTabs[st.tab];
     dlg().querySelector(".dialog").innerHTML =
       '<div class="set-head"><h2>' + PR.t("设置") + '</h2><div class="set-tabs">' + tabs().map(([k, l]) => '<button data-set-tab="' + k + '" class="' + (st.tab === k ? "on" : "") + '">' + l + "</button>").join("") + "</div>" + (st.tab === "chat" ? saveStatusHtml() : "") + "</div>" +
       '<div class="set-body">' + (t ? t.render(st) : "") + "</div>" +
       '<div class="actions set-foot"><button class="linkish" id="showLog">' + PR.t("运行日志") + '</button><span class="grow"></span><button class="btn" id="setCancel">' + (st.tab === "chat" ? PR.t("关闭") : PR.t("取消")) + '</button>' + (st.tab === "chat" ? "" : '<button class="btn primary" id="setSave">' + PR.t("保存") + "</button>") + "</div>";
+    dlg().querySelector(".set-body").scrollTop = scroll;
   }
 
   function saveStatusHtml() {
@@ -150,10 +153,11 @@
       const c = state.cfg, o = c.openai;
       return { engine: c.engine, batch_pages: c.batch_pages, concurrency: c.concurrency, page_cap: c.page_cap, auto_translate: c.auto_translate,
         chatgpt_web: { model: (c.chatgpt_web || {}).model || "", batch_pages: (c.chatgpt_web || {}).batch_pages || 4 },
+        paper_concurrency: Number.isInteger(c.paper_concurrency) ? Math.max(1, Math.min(4, c.paper_concurrency)) : 1,
         claude: { model: c.claude.model, command: c.claude.command, reasoning_effort: c.claude.reasoning_effort || "" },
         codex: { model: c.codex.model, command: c.codex.command, reasoning_effort: c.codex.reasoning_effort || "", service_tier: c.codex.service_tier || "" },
         ...Object.fromEntries(Object.keys(PR.agentClis).filter((k) => c[k]).map((k) => [k, { model: c[k].model || "", command: c[k].command || "", reasoning_effort: c[k].reasoning_effort || "" }])),
-        openai: { preset: o.preset, base_url: o.base_url, api: o.api, model: o.model, api_key: o.api_key, vision: o.vision,
+        openai: { custom_apis: o.custom_apis || [], preset: o.preset, base_url: o.base_url, api: o.api, model: o.model, api_key: o.api_key, vision: o.vision,
           reasoning_effort: o.reasoning_effort || "", service_tier: o.service_tier || "" } };
     },
   };

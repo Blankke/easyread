@@ -9,7 +9,8 @@
   const found = {};  // 接口地址 → 点“获取模型列表”拉到的模型名
   const masked = (v) => String(v || "").startsWith("••••");
   const preset = (s, id) => s.presets.find((p) => p.id === id);
-  const hasKey = (s, id) => (s.cfg.openai.saved_keys || []).includes(id) || !!(s.chatKeys || {})[id];
+  PR.apiKeyId = (id, url) => id || "url:" + String(url || "").trim().replace(/\/+$/, "");
+  const hasKey = (s, id, url) => { const slot = PR.apiKeyId(id, url); return (s.cfg.openai.saved_keys || []).includes(slot) || !!(s.chatKeys || {})[slot]; };
   PR.apiHasKey = hasKey;
   /* 模型的显示名：推荐名单里有就用“DeepSeek V4.1 Flash”，没有就是模型名本身 */
   PR.apiModelName = (s, presetId, model) => ((((preset(s, presetId) || {}).models) || []).find((m) => m.id === model) || {}).name || model;
@@ -43,7 +44,7 @@
 
   function html(s, a, opt) {
     const p = preset(s, a.preset);
-    const kp = opt.keyProp, saved = hasKey(s, a.preset) || masked(a[kp]);
+    const kp = opt.keyProp, saved = hasKey(s, a.preset, a.base_url) || masked(a[kp]);
     const addr = '<div class="grid2"><label class="field"><span>' + PR.t("接口地址（base URL）") + '</span><input class="input" data-af="base_url" value="' + PR.esc(a.base_url) + '" placeholder="https://…/v1"></label>' +
       '<label class="field"><span>' + PR.t("接口格式") + '</span><select class="input" data-af="api">' + PR.opt(API_KINDS, a.api || "chat") + "</select></label></div>";
     let note = p ? PR.esc(p.note || "") : PR.t("填服务商给的接口地址（一般以 /v1 结尾）。不知道选哪种接口格式就用 Chat Completions；只支持 Responses 的才换。");
@@ -53,12 +54,13 @@
     }
     const link = p && p.key_url ? ' <a href="' + p.key_url + '" target="_blank" rel="noopener">' + (p.key ? PR.t("获取 Key ↗") : PR.t("下载 ↗")) + "</a>" : "";
     const fetchMsg = s.fetchMsg || {};
-    return tiles(s, a) + '<p class="hint preset-note">' + note + link + "</p>" + (p ? "" : addr) +
+    return tiles(s, a) + '<p class="hint preset-note">' + note + link + "</p>" + (p ? "" : PR.customApis.html(s, a) + addr) +
       (p && !p.key ? "" : '<label class="field"><span>API Key</span><input class="input" type="password" data-af="key" value="' + (masked(a[kp]) ? "" : PR.esc(a[kp] || "")) +
         '" placeholder="' + (saved ? PR.t("已保存，留空不改") : "sk-…") + '" autocomplete="off"></label>') +
       '<label class="field"><span>' + PR.t("模型") + '</span><div class="model-row">' + modelField(s, a, p) +
       '<button class="btn sm line" data-fetch-models title="' + PR.t("从接口读出它支持的全部模型") + '">' + PR.t("获取模型列表") + "</button></div>" +
       (fetchMsg.text ? '<span class="test-result ' + (fetchMsg.cls || "") + '">' + PR.esc(fetchMsg.text) + "</span>" : "") + "</label>" +
+      (!p ? '<button class="btn sm line" data-custom-save>' + PR.t("保存此接口") + "</button>" : "") +
       (opt.vision ? '<label class="check" style="margin:0 0 10px"><input type="checkbox" data-af="vision"' + (a.vision ? " checked" : "") + ">" + PR.t("模型能看图（把原页图一起发过去，公式和表格更准）") + "</label>" : "") +
       (p ? '<details class="api-adv"' + (s.advOpen ? " open" : "") + "><summary>" + PR.t("高级：接口地址、接口格式") + "</summary>" + addr + "</details>" : "");
   }
@@ -76,7 +78,7 @@
   /* 换服务商：地址、格式、默认模型跟着换；换到自定义时清空让用户填 */
   function pick(s, a, id, kp) {
     const p = preset(s, id), prev = a.preset;
-    a.preset = id;
+    a.preset = id; a.connection_name = "";
     s.fetchMsg = null; s.apiTyping = false;
     if (p) {
       const om = id === "ollama" && s.found && s.found.ollama && s.found.ollama.models;
@@ -92,12 +94,17 @@
     pick(s, a, id, kp) { pick(s, a, id, kp); },
     /* 点击：服务商、获取模型列表。处理了返回 true（要重画），没处理返回 false */
     async click(e, s, a, kp, root) {
+      if (e.target.closest("[data-custom-save]")) {
+        read(root, a, kp);
+        if (PR.customApis.save(s, a, kp)) await PR.saveModelSettings();
+        return true;
+      }
       const b = e.target.closest("[data-af-preset]");
       if (b) { read(root, a, kp); pick(s, a, b.dataset.afPreset, kp); return true; }
       if (e.target.closest("[data-fetch-models]")) {
         e.preventDefault();
         read(root, a, kp);
-        const key = masked(a[kp]) ? (s.chatKeys || {})[a.preset] || "" : a[kp] || "";
+        const key = masked(a[kp]) ? (s.chatKeys || {})[PR.apiKeyId(a.preset, a.base_url)] || "" : a[kp] || "";
         s.fetchMsg = { text: PR.t("正在获取…") };
         PR.settingsRender();
         try {

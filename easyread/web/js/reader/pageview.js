@@ -5,12 +5,16 @@
   const body = document.body;
   let pvPage = 1, pvBlock = null, pvZoom = 1;
   const pages = () => (S.paper.meta || {}).pages || [];
-  const boxesOf = (loc) => loc.boxes && loc.boxes.length ? loc.boxes : [loc.box];
+  const regionsOf = (loc) => !loc ? [] : loc.regions?.length ? loc.regions :
+    (loc.boxes?.length ? loc.boxes : [loc.box]).map(box => ({ page: loc.page, box }));
+  const boxesOf = (loc, page) => regionsOf(loc).filter(r => r.page === page).map(r => r.box);
 
   /* 右侧面板开关：pages | notes | null */
   /* 面板滑出的同时正文就让位：重排只要几十毫秒（fitWide 不再重量公式），不必等面板滑完再跳一下。 */
   PR.side = null;
   PR.openSide = function (name) {
+    if (PR.side === "notes" && name !== "notes") PR.finishPanelNote?.();
+    if (PR.side !== name && PR.editingNote) PR.closeNoteEditor();
     PR.side = name;
     body.classList.toggle("pv-open", name === "pages");
     body.classList.toggle("np-open", name === "notes");
@@ -140,8 +144,8 @@
     let best = null, bestBox = null, distance = Infinity;
     for (const id in S.layout) {
       const loc = S.layout[id];
-      if (loc.page !== pvPage || !PR.blockById[id]) continue;
-      for (const box of boxesOf(loc)) {
+      if (!PR.blockById[id]) continue;
+      for (const box of boxesOf(loc, pvPage)) {
         if (!box) continue;
         const d = Math.max(box[1] - y, y - box[3], 0);
         if (d < distance) { best = id; bestBox = box; distance = d; }
@@ -171,11 +175,11 @@
 
   function highlightBlock(page, blockId) {
     pageNodes.forEach(p => p.hl.classList.remove("on"));
-    const hl = pageNodes[page - 1].hl;
     const loc = blockId && S.layout[blockId];
-    pair(loc && loc.page === page ? blockId : null);
-    if (loc && loc.page === page) {
-      const boxes = boxesOf(loc);
+    pair(boxesOf(loc, page).length ? blockId : null);
+    pageNodes.forEach((entry, i) => {
+      const boxes = boxesOf(loc, i + 1), hl = entry.hl;
+      if (!boxes.length) return;
       hl.replaceChildren(...boxes.map(([x0, y0, x1, y1]) => {
         const region = document.createElement("div");
         region.className = "pv-region";
@@ -183,7 +187,7 @@
         return region;
       }));
       hl.classList.add("on");
-    }
+    });
   }
 
   function showPage(page, blockId) {
@@ -197,8 +201,8 @@
     loadNearby(pvPage); updatePageLabel();
     highlightBlock(pvPage, blockId);
     const loc = blockId && S.layout[blockId];
-    if (loc && loc.page === pvPage) {
-      const boxes = boxesOf(loc);
+    if (boxesOf(loc, pvPage).length) {
+      const boxes = boxesOf(loc, pvPage);
       const [, y0, , y1] = boxes[0];
       scroller.scrollTo({ top: Math.max(0, pageTop(node) + ((y0 + y1) / 2) * node.offsetHeight - scroller.clientHeight / 2), behavior: "smooth" });
     } else {
@@ -225,8 +229,8 @@
     let best = null, area = Infinity;
     for (const id in S.layout) {
       const l = S.layout[id];
-      if (l.page !== page || !PR.blockById[id]) continue;
-      for (const [x0, y0, x1, y1] of boxesOf(l)) {
+      if (!PR.blockById[id]) continue;
+      for (const [x0, y0, x1, y1] of boxesOf(l, page)) {
         const a = (x1 - x0) * (y1 - y0);
         if (x >= x0 - 0.01 && x <= x1 + 0.01 && y >= y0 - 0.006 && y <= y1 + 0.006 && a < area) { best = id; area = a; }
       }
@@ -271,10 +275,12 @@
   });
   PR.refreshPages = () => showPage(pvPage);  // 面板宽度变了，按新宽度换图
   PR.pageStep = (d) => {
-    showPage(pvPage + d);
+    const next = Math.min(pages().length, Math.max(1, pvPage + d));
+    const continued = pvBlock && boxesOf(S.layout[pvBlock], next).length ? pvBlock : null;
+    showPage(next, continued);
     const entry = pageNodes[pvPage - 1];
     if (!entry) return;
     holdUntil = Date.now() + 2000;
-    followPanel(entry, entry.node.getBoundingClientRect().top);
+    if (!continued) followPanel(entry, entry.node.getBoundingClientRect().top);
   };
 })(window.PR);

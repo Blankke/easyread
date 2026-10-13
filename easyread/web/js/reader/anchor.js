@@ -148,6 +148,20 @@
   }
   PR.hasPendingSelection = () => !!pendingSel && selbar().classList.contains("open");
 
+  // Native copy includes KaTeX's positioned glyphs and hidden MathML, which
+  // rich-text editors can paste as one character per line (and twice).
+  document.addEventListener("copy", (e) => {
+    if (!e.clipboardData || e.target.closest?.("input, textarea, [contenteditable]")) return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    if (!PR.$$("#paper .katex").some((math) => range.intersectsNode(math))) return;
+    const selected = readSelection();
+    if (!selected) return;
+    e.clipboardData.setData("text/plain", selected.quote);
+    e.preventDefault();
+  });
+
   function showSelbar() {
     pendingSel = readSelection();
     const bar = selbar();

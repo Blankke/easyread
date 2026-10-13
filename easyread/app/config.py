@@ -25,17 +25,19 @@ SERVER_INFO = HOME / ".server.json"
 DEFAULTS = {
     "library_dir": str(HOME / "library"),
     "port": 8765,
-    "engine": "claude",          # claude | codex | grok | agy | cursor（本机 CLI 无头）| openai（任意 OpenAI 兼容接口）| none
+    "engine": "claude",          # claude | codex | codebuddy | grok | agy | cursor（本机 CLI 无头）| openai（任意 OpenAI 兼容接口）| none
     "auto_translate": True,      # 导入后自动开始翻译
     "target": "zh",              # 译文语言，见 langs.py
     "check_updates": True,       # 打开文献库时问 GitHub 有没有新版本（一天一次），见 updates.py
     "batch_pages": 2,            # 每次交给模型的页数
+    "paper_concurrency": 1,      # 默认逐篇处理；手动设1-4，重启生效，会与每篇的分段并发相乘
     "page_cap": 60,              # 全文超过多少页先确认；0 表示不限
     "concurrency": 0,            # 同时译几段（分段并行，见 segments.py）；0 是自动，每段约 2 批、最多 4 段；手动最多 8 段
     "concurrency_v": 2,          # 1.3.1 起 concurrency 的意思变了，旧配置的 1 当成自动，见 load
     "claude": {"command": "claude", "model": "", "reasoning_effort": "", "extra_args": [], "timeout": 1200},
     "codex": {"command": "codex", "model": "", "reasoning_effort": "", "service_tier": "", "extra_args": [], "timeout": 1200},
     "chatgpt_web": {"model": "", "batch_pages": 4},  # 网页回复有固定往返开销；独立控制每批页数
+    "codebuddy": {"command": "codebuddy", "model": "", "extra_args": [], "timeout": 1200},
     # 另外三个本机 CLI（见 agent_cli.py）；command 空着按默认名找，model 空着用 CLI 自己的默认
     "grok": {"command": "", "model": "", "reasoning_effort": "", "extra_args": [], "timeout": 1200},
     "agy": {"command": "", "model": "", "reasoning_effort": "", "extra_args": [], "timeout": 1200},
@@ -94,19 +96,21 @@ def with_key(o: dict) -> dict:
     o = dict(o)
     key = o.pop("api_key", None)
     preset = o.get("preset", cur.get("preset")) or ""
-    keys = dict(cur.get("keys") or {})
-    if cur.get("api_key") and not keys:  # 旧配置只有一个 Key
-        keys[cur.get("preset") or ""] = cur["api_key"]
+    from .api_keys import key_id, saved_keys
+    keys = saved_keys(cur)
+    slot = key_id(preset, o.get("base_url", cur.get("base_url", "")))
     if key and not key.startswith("••••"):
-        keys[preset] = key.strip()
+        keys[slot] = key.strip()
     o["keys"] = keys
-    o["api_key"] = keys.get(preset, "")
+    o["api_key"] = keys.get(slot, "")
     return o
 
 
 def public(cfg: dict) -> dict:
     """给页面看的配置：密钥只露后四位。"""
+    from .api_keys import saved_keys
     out = copy.deepcopy(cfg)
+    out["openai"]["keys"] = saved_keys(cfg["openai"])
     key = out["openai"].get("api_key") or ""
     out["openai"]["api_key"] = ("••••" + key[-4:]) if key else ""
     out["openai"]["has_key"] = bool(key)

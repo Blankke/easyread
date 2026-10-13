@@ -59,6 +59,14 @@
     const box = PR.$("#detail");
     const i = L.byId(L.selected);
     if (!i) { box.innerHTML = ""; return; }
+    if (i.load_error) {
+      box.innerHTML = '<div class="detail-head"><span>' + PR.t("论文详情") +
+        '</span><button class="detail-close" data-d="close" title="' + PR.t("收起（Esc）") + '">' + PR.icon("x", "sm") +
+        '</button></div><div class="detail-inner"><p class="err">' + PR.esc(i.load_error) +
+        '</p><a class="btn line" href="/p/' + i.id + '/source.pdf" target="_blank" rel="noopener">' +
+        PR.icon("pdf", "sm") + PR.t("打开原 PDF") + '</a></div>';
+      return;
+    }
     if (box.contains(document.activeElement) && document.activeElement.matches("[contenteditable], input")) return; // 正在编辑，不打断
     const thumb = i.thumb ? '<div class="thumb" style="background-image:url(' + i.thumb + ')"></div>' : '<div class="thumb blank">' + PR.icon("pdf") + "</div>";
     const readLabel = i.progress > 0.02 ? PR.t("继续阅读 · {pct}%", { pct: Math.round(i.progress * 100) }) : PR.t("开始阅读");

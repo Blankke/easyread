@@ -167,7 +167,11 @@
     const a = e.target.closest && e.target.closest("a.cite, a.xref");
     if (!a) return;
     clearTimeout(hoverT);
-    hoverT = setTimeout(() => PR.popover(a, refCard(a)), 180);
+    hoverT = setTimeout(() => {
+      const b = a.classList.contains("xref") && PR.blockById[PR.xindex[a.dataset.kind]?.[a.dataset.key]];
+      if (PR.media.isMedia(b)) PR.media.hover(a, b);
+      else PR.popover(a, refCard(a));
+    }, 180);
   });
   document.addEventListener("mouseout", (e) => { if (e.target.closest && e.target.closest("a.cite, a.xref")) { clearTimeout(hoverT); PR.hidePopoverSoon(); } });
   document.addEventListener("click", (e) => {

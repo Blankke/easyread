@@ -120,9 +120,10 @@ class JobsTest(unittest.TestCase):
     def test_resume_finishes_before_workers_start(self):
         write_json_atomic(self.ws.root / "job.json", {"state": "running", "pages": [1]})
         states = []
-        with patch("easyread.server.jobs.threading.Thread.start", side_effect=lambda: states.append(self.ws.load("job")["state"])):
+        with patch("easyread.server.jobs.config.load", return_value={"paper_concurrency": 2}), \
+                patch("easyread.server.jobs.threading.Thread.start", side_effect=lambda: states.append(self.ws.load("job")["state"])):
             resumed = Jobs(self.lib)
-        self.assertEqual(states, ["queued", "queued"])
+        self.assertEqual(states, ["queued"] * 3)
         self.assertEqual(resumed.bulk.qsize(), 1)
 
     def test_small_job_ids_are_unique_with_frozen_clock(self):

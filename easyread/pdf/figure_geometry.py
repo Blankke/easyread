@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import figure_pixels, page_margins
 from .figures import figure_box
+from .paragraph_regions import matched_body_words
 from ..app.log import log
 
 
@@ -151,9 +152,13 @@ def _score(graphic, caption, aspect):
     return _distance(graphic, box, aspect)
 
 
-def _page_regions(page, captions, occupied, render, running=()):
+def _page_regions(page, captions, occupied, render, running=(), paragraphs=()):
     aspect = page.width / page.height
-    all_words = [b for b in (_box(word, page) for word in page.extract_words()) if b]
+    page_words = page.extract_words()
+    all_words = [b for b in (_box(word, page) for word in page_words) if b]
+    # A paragraph can start on the previous page, or have only its head located
+    # in the other column. Recover its actual words before growing figure labels.
+    occupied = occupied + [b for b in (_box(word, page) for word in matched_body_words(page_words, paragraphs)) if b]
     separators = _separators(page)
     top, bottom = page_margins.margins(separators, running)
     masks = render(all_words + separators)
@@ -207,7 +212,12 @@ def _page_regions(page, captions, occupied, render, running=()):
         # Vector plots can put labels just outside their paths. Keep those labels,
         # while excluding body paragraphs and captions belonging to other figures.
         # 标签可以一个挨一个连出去（图里的小标题、坐标轴说明常是 PDF 文字）。
-        labels, pending = [], [b for b in words + marks if not _covered(b, others)]
+        # A single-column drawing and its caption establish a column boundary.
+        # Label flood-fill must not jump the gutter into neighboring prose.
+        anchor = _bounds(selected + [caption["box"]])
+        left, right = (0., .5) if anchor[2] <= .5 else ((.5, 1.) if anchor[0] >= .5 else (0., 1.))
+        labels, pending = [], [b for b in words + marks if not _covered(b, others)
+                               and b[0] >= left and b[2] <= right]
         while True:
             near = [b for b in pending if any(_distance(b, g, aspect) <= .03 for g in selected + labels)]
             if not near:
@@ -331,8 +341,9 @@ def locate_figures(root: Path, blocks: list[dict], layout: dict) -> dict[str, di
             for pn, captions in by_page.items():
                 if not any(c["type"] == "figure" for c in captions.values()) or not 1 <= pn <= len(pdf.pages):
                     continue
-                occupied = [box for bid, loc in layout.items() if bid not in caption_ids and loc["page"] == pn
-                            for box in loc.get("boxes") or [loc["box"]]]
+                from .caption_extent import page_locs
+                occupied = [loc["box"] for loc in page_locs(
+                    {bid: loc for bid, loc in layout.items() if bid not in caption_ids}, pn)]
                 def render(erase, pn=pn):
                     try:
                         return figure_pixels.visible_mask(root / "source.pdf", pn - 1, erase)
@@ -340,8 +351,12 @@ def locate_figures(root: Path, blocks: list[dict], layout: dict) -> dict[str, di
                         log.exception("渲染原页失败 %s 第 %s 页", root, pn)
                         return None
                 page = pdf.pages[pn - 1]
+                paragraphs = [" ".join(it.get("en", "") for it in block.get("items", []))
+                              if block.get("type") == "list" else block.get("en", "")
+                              for block in blocks if block.get("type") in ("para", "list", "heading")
+                              and block.get("page") in (pn - 1, pn)]
                 try:
-                    result.update(_page_regions(page, captions, occupied, render, running.get(pn, ())))
+                    result.update(_page_regions(page, captions, occupied, render, running.get(pn, ()), paragraphs))
                 except Exception:  # noqa: BLE001
                     log.exception("读取 PDF 图形边界失败 %s 第 %s 页", root, pn)
                 finally:

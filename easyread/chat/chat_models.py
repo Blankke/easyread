@@ -1,6 +1,6 @@
 """“问 AI”用哪些模型：设置里一张短名单（默认 Claude Opus 5.5、Claude Sonnet 5.5、GPT），可以增删改。
 
-每一项：{"id", "name", "engine": "claude" | "codex" | "grok" | "agy" | "cursor" | "openai", "model", "preset"（API 服务商）, "base_url"（自定义地址时）,
+每一项：{"id", "name", "engine": "claude" | "codex" | "codebuddy" | "grok" | "agy" | "cursor" | "openai", "model", "preset"（API 服务商）, "base_url"（自定义地址时）,
          "api"（chat | responses，不填跟服务商默认）}
 API 的 Key 用翻译引擎那边按服务商存的同一份（openai.keys），不用填两次。
 """
@@ -81,12 +81,9 @@ def find(cfg: dict, mid: str | None) -> dict:
     return next((m for m in ms if m.get("id") == want), ms[0] if ms else DEFAULT_MODELS[0])
 
 
-def _key(cfg: dict, preset: str) -> str:
-    o = cfg["openai"]
-    keys = dict(o.get("keys") or {})
-    if o.get("api_key"):
-        keys.setdefault(o.get("preset") or "", o["api_key"])
-    return keys.get(preset or "", "")
+def _key(cfg: dict, preset: str, base_url: str = "") -> str:
+    from ..app.api_keys import resolve
+    return resolve(cfg["openai"], preset, base_url)
 
 
 def engine_cfg(cfg: dict, mid: str | None) -> tuple[dict, dict]:
@@ -104,7 +101,7 @@ def engine_cfg(cfg: dict, mid: str | None) -> tuple[dict, dict]:
         p = next((x for x in PRESETS if x["id"] == m.get("preset")), None)
         out["openai"] = {**out["openai"], "preset": m.get("preset") or "", "vision": False,
                          "base_url": m.get("base_url") or (p["base_url"] if p else out["openai"].get("base_url", "")),
-                         "model": m.get("model") or (p["model"] if p else ""), "api_key": _key(cfg, m.get("preset") or ""),
+                         "model": m.get("model") or (p["model"] if p else ""), "api_key": _key(cfg, m.get("preset") or "", m.get("base_url") or ""),
                          "api": m.get("api") or (p or {}).get("api") or "chat",
                          "reasoning_effort": m.get("reasoning_effort") or "", "service_tier": m.get("service_tier") or ""}
     else:
@@ -160,8 +157,11 @@ def listing(cfg: dict) -> dict:
             hint = "" if ready else tr("本机没找到 {source}", source=source)
         else:
             p = next((x for x in PRESETS if x["id"] == m.get("preset")), None)
-            ready = bool(_key(cfg, m.get("preset") or "")) or not needs_key({"preset": m.get("preset"), "base_url": m.get("base_url", "")})
-            source = p["name"] if p else tr("自定义地址")
+            ready = bool(_key(cfg, m.get("preset") or "", m.get("base_url") or "")) or not needs_key({"preset": m.get("preset"), "base_url": m.get("base_url", "")})
+            from ..app.api_keys import key_id
+            profile = next((c for c in cfg["openai"].get("custom_apis", [])
+                            if key_id("", c.get("base_url", "")) == key_id("", m.get("base_url", ""))), {})
+            source = p["name"] if p else profile.get("name") or tr("自定义地址")
             hint = "" if ready else tr("还没填 {source} 的 Key（设置 → 模型 → 点这张卡片 → 修改）", source=source)
         out.append({**m, "label": label(m), "source": source, "ready": ready, "hint": hint,
                     "detail": (actual_of(m.get("model", "")) or m.get("model") or _claude_default()) if e == "claude"

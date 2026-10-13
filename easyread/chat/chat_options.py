@@ -44,6 +44,8 @@ def apply(ecfg: dict, options: dict | None) -> dict:
                 allowed = ["", *match["reasoning_levels"]]
         elif engine in agent_cli.ENGINES:
             allowed = ["", *agent_cli.SPECS[engine]["efforts"]]
+        elif engine == "codebuddy":
+            allowed = [""]
         if effort not in allowed:
             raise ValueError("Unsupported reasoning effort")
         ecfg[engine]["reasoning_effort"] = effort

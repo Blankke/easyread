@@ -68,7 +68,7 @@
   });
 
   /* ---------- 数据变化 ---------- */
-  const busy = () => PR.editingKey || PR.editingNote;
+  const busy = () => PR.editingKey || PR.editingNote || PR.noteMedia.isRenaming();
   const refreshNotes = PR.debounce(() => {
     if (busy()) return refreshNotes();
     PR.applyMarks(); PR.renderMargin();

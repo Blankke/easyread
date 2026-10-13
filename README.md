@@ -23,12 +23,13 @@
 
 - **像读一本排好版的中文书。** 宋体正文、舒服的行宽和行距，公式用 KaTeX 按原文重排，表格是三线表，参考文献保留原文。顶栏一键切深色。
 - **随时核对原文。** 一键切“对照”，每段下面附英文；右侧可以开原页，跟着阅读位置翻页，还会框出当前段落在原页的位置。鼠标放在原页区域，按住 `Ctrl` 滚动滚轮可缩放 PDF（50%–400%），窗口和面板宽度保持不变；放大后可横向滚动查看。
+- **在论文里找内容。** 按 Ctrl / ⌘ + F 同时搜索原文和译文，显示匹配数、高亮结果，用 Enter / Shift + Enter 跳到下一处 / 上一处
 - **翻译和解释分开。** 正文只放忠实的译文；AI 的解释、回答放在页边，一眼就能分清哪句是论文说的。
 - **边读边问 AI。** 右侧“问 AI”面板实时对话，回答逐字流出来；可以一次引用好几段（选中文字拖进输入框就行）。问“我标红的那些公式有什么联系”，它会按颜色找出你的划线。可以开多个对话，模型单独选：Claude、GPT（Codex）、DeepSeek、通义、本机 Ollama……好的回答一键放到页边。
 - **ASD-STE100 问答。** 在“问 AI”的“回答方式”里选择这个模式，用简明中文回答问题或总结论文，保留专业术语、公式和数值。模式按对话保存，支持复制、放到页边和导出 Markdown。[ASD-STE100](https://www.asd-ste100.org/STE_faq.html) 是英文标准；这个模式借鉴其短句、主动表达和术语一致等原则，提供中文写作辅助，不将中文答案标为符合英文标准或已认证。正文过长时只提供节选，回答需说明依据范围。
   中文提示词另参考 [asd-ste100-skill](https://github.com/danyuchn/asd-ste100-skill) 的语义保留原则：保留条件、范围和“可能／建议／必须”等语气强度，不为简短而丢失精度。
 - **精读问答。** “回答方式”里的第三档，适合想弄明白“作者为什么这么做、这个结论能撑多远”的时候：先还原作者要解决的问题，分清哪些设计拿掉就塌、哪些是顺手加的，把关键公式代进具体数字算一遍，再核对正文数字和图表、基线对照条件是否对齐。论文没报告的就直说没报告，不替作者补数字。和简明回答一样会把全文发给模型，用量更多。
-- **边读边批注。** 选中文字四色荧光笔或下划线、写笔记、提问；问题一键让 AI 回答，笔记可以让 AI 点评。所有笔记按原文顺序汇总，可以勾选导出成 Markdown（放进 Obsidian、Notion）。
+- **边读边批注。** 选中文字四色荧光笔或下划线、写笔记、提问；问题一键让 AI 回答，笔记可以让 AI 点评。笔记面板按正文顺序汇总批注，可以筛选、滚动回看；点击卡片定位正文，点“编辑”才改笔记。通过缩略图选择或从正文拖拽，把图表关联到笔记，展开查看或修改图表名称；正文里的图表引用可以悬停预览。可以勾选导出成 Markdown（放进 Obsidian、Notion）
 - **译文可以改。** 双击一段直接改；术语表里改一个译法，全文替换。
 - **不只是 arXiv。** 拖进任何 PDF；或者填 arXiv 编号、DOI、论文标题、论文网页（OpenReview、ACL、NeurIPS、bioRxiv、PMC、期刊页面），自动找到公开的 PDF 并补全作者、年份、出处。
 - **从 Zotero 搬过来。** 导入对话框里点“从 Zotero 迁移整个文献库”，自动找到 Zotero 的数据文件夹，把有 PDF 的论文连同分类（多级照样分层）、标题、作者、年份、期刊、DOI、摘要一起搬进来；只读 Zotero 的数据库副本，不改动 Zotero，可以重复迁移。也能“导入整个文件夹”：选一个放论文的文件夹，子文件夹的层级就是分类的层级。两种都在后台导入、可以中途停止，导入后不翻译，想读哪篇再译哪篇。
@@ -47,15 +48,18 @@
 |---|---|---|
 | **Claude Code**（推荐） | 装好并登录 [Claude Code](https://docs.claude.com/en/docs/claude-code/setup) | 不用 Key，用你订阅的额度；会自己看原页图核对公式，译文最好 |
 | **Codex CLI** | 装好并登录 [Codex](https://github.com/openai/codex) | 不用 Key，用 ChatGPT 账号 |
+| **CodeBuddy CLI** | 按[官方 CLI 文档](https://www.codebuddy.cn/docs/cli/headless)安装并登录，账号需有 CLI 使用权益 | 不用 Key；模型名自己填，留空用 CLI 默认模型。[当前免费体验版不含 CLI](https://www.codebuddy.cn/docs/workbuddy/Pricing)，与 WorkBuddy 同账号共享积分 |
 | **Grok Build / Antigravity CLI / Cursor CLI** | 装好并登录 [Grok Build](https://x.ai/cli)、[Antigravity CLI](https://antigravity.google/docs/cli) 或 [Cursor CLI](https://cursor.com/docs/cli/installation) | 不用 Key，用各自的订阅；模型名自己填，留空用它的默认 |
 | **API 接口 · 国内直连**：DeepSeek / 智谱 / 阿里云百炼 / Kimi / 硅基流动 / 魔搭 | API Key | 智谱 GLM-4.7-Flash、硅基流动小模型免费；DeepSeek 一篇 20 页论文几毛钱 |
 | **API 接口 · 海外（要梯子）**：OpenAI / Anthropic / Gemini / OpenRouter / Groq / Cerebras | API Key | Gemini、OpenRouter、Groq、Cerebras 有免费额度 |
 | **API 接口 · 本机**：Ollama / LM Studio | 本机装 [Ollama](https://ollama.com) 或 [LM Studio](https://lmstudio.ai) | 完全离线、免费，推荐 qwen3.5:9b（显卡小用 4b） |
-| **API 接口 · 自定义地址**：任意 OpenAI 兼容接口、中转站 | 地址 + Key | Chat Completions 和 Responses 两种格式都支持；点“获取模型列表”从接口拉模型名 |
+| **API 接口 · 自定义地址**：任意 OpenAI 兼容接口、中转站 | 地址 + Key | Chat Completions 和 Responses 两种格式都支持；接口名称和地址可保存复用，Key 按地址分别保存；点“获取模型列表”从接口拉模型名 |
 
 不想让它导入后马上翻译，在设置里关掉“导入后自动开始翻译”就行，之后可以让对话里的 agent 来译。
 
 设置里会自动检测本机装了什么，点“试译一句”马上知道能不能用。某一页翻译失败（限流、网络、额度）会自动重试，还不行就先跳过、接着译后面的页，最后一键“重试失败的页”。
+
+默认逐篇翻译，单篇内部仍可分段并发。在“设置 → 模型 → 翻译”中可将“同时翻译几篇”设为 1–4 篇，重启后生效。多篇并行会叠加分段并发，增加内存和模型限流风险，建议保持默认 1 篇；详见[配置说明](docs/paper-concurrency.md)
 
 <p align="center"><img src="docs/images/settings.jpg" width="640" alt="设置"></p>
 
@@ -230,7 +234,7 @@ MIT。公式渲染用 [KaTeX](https://katex.org)（MIT）。
 ## 贡献者
 
 - [@Wang-auspicious](https://github.com/Wang-auspicious) — Electron 桌面版打包与发布流程；论文精读技能 paper-xray（[#40](https://github.com/Edwardxlai/easyread/pull/40)）；问 AI 的“精读”回答方式（[#41](https://github.com/Edwardxlai/easyread/pull/41)）
-- [@bisuwuss-netizen](https://github.com/bisuwuss-netizen) — 修复桌面安装包漏打 PDF 依赖、双栏论文原页定位；“问 AI”和笔记里的 Markdown 表格与引用块
+- [@bisuwuss-netizen](https://github.com/bisuwuss-netizen) — 修复桌面安装包漏打 PDF 依赖、双栏论文原页定位；“问 AI”和笔记里的 Markdown 表格与引用块；模型 JSON 解析、学术阅读提示词与多篇论文并行翻译（[#64](https://github.com/Edwardxlai/easyread/pull/64)，默认 1 篇，可手动开启至 4 篇）
 - [@MeshedPoto](https://github.com/MeshedPoto) — 并行翻译时 PDFium 随机报错、跨栏段落原页高亮、macOS 桌面版稳定性、HTTPS 证书与流式回答的一批修复；v1.3 的 ASD-STE100 中文问答和公式显示修复；v1.3.1 的图片裁剪修复（[#22](https://github.com/Edwardxlai/easyread/pull/22)）
 - [@Lzy22301093](https://github.com/Lzy22301093) — 异常表格校验与渲染修复，避免单个表格导致整篇译文空白（[#17](https://github.com/Edwardxlai/easyread/pull/17)）
 - [@NGman-s](https://github.com/NGman-s) — 整页都是上一页续文时不再误报翻译失败（[#30](https://github.com/Edwardxlai/easyread/pull/30)）

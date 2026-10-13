@@ -27,9 +27,10 @@ Runs locally. You choose the model service and whether to keep your library in a
 
 - **Reads like a typeset book.** Serif body text, comfortable line length and spacing. Equations are re-rendered with KaTeX, tables become clean three-line tables, references stay in the original. One click in the top bar for dark mode.
 - **The original is always right there.** Toggle "bilingual" to show the English under each paragraph. Open the original page on the right: it follows your reading position and draws a box around the paragraph you're on. Hold `Ctrl` and scroll over the original pages to zoom the PDF (50%–400%) while keeping the window and panel width unchanged; scroll horizontally to explore enlarged pages.
+- **Find text in a paper.** Press Ctrl / ⌘ + F to search both the original and the translation, with a match count and highlighted results. Enter / Shift + Enter moves to the next / previous match.
 - **Translation and commentary are kept apart.** The main text is only the faithful translation. AI explanations and answers go in the margin, so you always know what the paper actually says.
 - **Ask AI while you read.** A chat panel with streaming answers. Quote several paragraphs at once (drag selected text into the input). Ask "how do the equations I highlighted in red relate?" and it finds your red highlights. Multiple chats, each with its own model: Claude, GPT (Codex), DeepSeek, Qwen, local Ollama… Pin a good answer to the margin in one click.
-- **Annotate.** Four highlighter colors or underline, notes, questions. Send a question to AI with one click, or ask it to comment on a note. All annotations are collected in reading order and can be exported to Markdown (Obsidian, Notion).
+- **Annotate.** Four highlighter colors or underline, notes, questions. Send a question to AI with one click, or ask it to comment on a note. The notes panel collects annotations in reading order; filter and scroll through them. Clicking a card jumps to the passage; use Edit to change the note. Attach figures and tables by choosing thumbnails or dragging them from the paper, then expand them or edit their names. Hover over figure and table references in the text to preview them. Export selected annotations to Markdown (Obsidian, Notion).
 - **Edit the translation.** Double-click a paragraph to edit it; change a term in the glossary and it's replaced everywhere.
 - **Not just arXiv.** Drop in any PDF, or paste an arXiv ID, DOI, paper title or paper page (OpenReview, ACL, NeurIPS, bioRxiv, PMC, journal sites). It finds the open PDF and fills in authors, year and venue.
 - **Move over from Zotero.** In the import dialog, "Move your whole Zotero library" finds your Zotero data folder and brings over every paper with a PDF, along with its collections (nested ones stay nested), title, authors, year, venue, DOI and abstract. It only reads a copy of the Zotero database and never changes Zotero; you can run it again later. "Import a whole folder" does the same for a folder of PDFs: subfolders become nested folders in the library. Both run in the background and can be stopped; nothing is translated until you ask.
@@ -50,13 +51,16 @@ Runs locally. You choose the model service and whether to keep your library in a
 |---|---|---|
 | **Claude Code** (recommended) | [Claude Code](https://docs.claude.com/en/docs/claude-code/setup) installed and logged in | No API key, uses your subscription. Looks at the page image to check equations. Best quality |
 | **Codex CLI** | [Codex](https://github.com/openai/codex) installed and logged in | No API key, uses your ChatGPT account |
+| **CodeBuddy CLI** | Install and sign in using the [official CLI docs](https://www.codebuddy.cn/docs/cli/headless); your account needs CLI access | No API key. Type the model name, or leave it empty for the CLI default. [The current free trial does not include CLI access](https://www.codebuddy.cn/docs/workbuddy/Pricing); credits are shared with WorkBuddy on the same account |
 | **Grok Build / Antigravity CLI / Cursor CLI** | [Grok Build](https://x.ai/cli), [Antigravity CLI](https://antigravity.google/docs/cli) or [Cursor CLI](https://cursor.com/docs/cli/installation) installed and logged in | No API key, uses that subscription. Type the model name, or leave it empty for the CLI's default |
 | **API · China**: DeepSeek / Zhipu / Alibaba Bailian (Qwen) / Kimi / SiliconFlow / ModelScope | API key | Zhipu GLM-4.7-Flash and SiliconFlow small models are free; DeepSeek costs cents per paper |
 | **API · International**: OpenAI / Anthropic / Gemini / OpenRouter / Groq / Cerebras | API key | Gemini, OpenRouter, Groq, Cerebras have free tiers |
 | **API · Local**: Ollama / LM Studio | [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) | Fully offline. qwen3.5:9b recommended (4b for small GPUs) |
-| **API · Custom endpoint**: any OpenAI-compatible API or relay | URL + key | Both Chat Completions and Responses formats; "Fetch model list" pulls model names from the endpoint |
+| **API · Custom endpoint**: any OpenAI-compatible API or relay | URL + key | Both Chat Completions and Responses formats; save named endpoints for reuse, with a separate key for each URL; "Fetch model list" pulls model names from the endpoint |
 
 Settings auto-detect what's installed; "Test one sentence" tells you right away whether an engine works. A failed page (rate limit, network, quota) is retried automatically, then skipped so the rest keeps going, and you can retry all failed pages in one click at the end.
+
+Papers are translated one at a time by default, with parallel batches still available within each paper. In Settings → Models → Translation, choose 1–4 concurrent papers and restart EasyRead to apply. Paper concurrency multiplies batch concurrency, increasing memory use and the risk of model rate limits; keeping the default of one paper is recommended. See the [configuration notes](docs/paper-concurrency.md).
 
 ## Install
 
@@ -197,7 +201,7 @@ Screenshots use a demonstration library. The Japanese sample translates the abst
 ## Contributors
 
 - [@Wang-auspicious](https://github.com/Wang-auspicious) — Electron desktop packaging and release workflow; the paper-xray deep-reading skill ([#40](https://github.com/Edwardxlai/easyread/pull/40)); the close reading answer style in Ask AI ([#41](https://github.com/Edwardxlai/easyread/pull/41))
-- [@bisuwuss-netizen](https://github.com/bisuwuss-netizen) — missing PDF dependency in desktop builds, two-column page locating; Markdown tables and blockquotes in Ask AI and notes
+- [@bisuwuss-netizen](https://github.com/bisuwuss-netizen) — missing PDF dependency in desktop builds, two-column page locating; Markdown tables and blockquotes in Ask AI and notes; model JSON parsing, academic reading prompts and parallel paper translation ([#64](https://github.com/Edwardxlai/easyread/pull/64), one paper by default, optionally up to four)
 - [@MeshedPoto](https://github.com/MeshedPoto) — PDFium errors during parallel translation, cross-column page highlights, macOS desktop reliability, HTTPS certificates and streaming fixes; ASD-STE100 Chinese answers and math rendering in v1.3; figure cropping fixes in v1.3.1 ([#22](https://github.com/Edwardxlai/easyread/pull/22))
 - [@Lzy22301093](https://github.com/Lzy22301093) — malformed table validation and rendering resilience ([#17](https://github.com/Edwardxlai/easyread/pull/17))
 - [@NGman-s](https://github.com/NGman-s) — pages that only continue the previous paragraph no longer reported as failed translations ([#30](https://github.com/Edwardxlai/easyread/pull/30))

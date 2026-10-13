@@ -12,6 +12,12 @@ def at(page, box, src="text"):
 
 
 class FloatOrderTest(unittest.TestCase):
+    def test_left_column_figure_precedes_right_column_top_paragraph(self):
+        blocks = [blk('left', 1), blk('right', 1), blk('fig', 1, 'figure')]
+        layout = {'left': at(1, [.08, .1, .48, .3]), 'right': at(1, [.52, .08, .92, .3]),
+                  'fig': at(1, [.08, .4, .48, .6], 'graphic')}
+        self.assertEqual(float_order.order(blocks, layout), ['left', 'fig', 'right'])
+
     def test_figure_at_page_top_moves_before_the_paragraph_that_cites_it(self):
         blocks = [blk("p2-9", 2), blk("p3-1", 3), blk("fig1", 3, "figure"), blk("s3-1", 3, "heading")]
         layout = {"p2-9": at(2, [0.17, 0.84, 0.82, 0.91]), "p3-1": at(3, [0.17, 0.55, 0.82, 0.59]),

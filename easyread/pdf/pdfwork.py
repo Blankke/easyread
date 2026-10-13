@@ -16,6 +16,7 @@ from statistics import median
 from ..translate import float_order
 from .caption_extent import column as _column, overlap_x as _overlap_x, page_locs as _page_locs
 from .caption_extent import extend_captioned as _extend_captioned
+from .text_regions import locate_prose
 from ..library.store import Workspace, write_json_atomic
 
 # PDFium is not thread-safe, even when threads open separate documents.
@@ -120,7 +121,7 @@ def crop(root: Path, page: int, box: list[float], out_name: str, scale: float = 
 
 _MATH = re.compile(r"\$[^$]*\$")
 _ALNUM = re.compile(r"[a-z0-9]")
-LOCATE_VERSION = "8"  # 模型给的图框改由 PDF 图形边界校正、截图不带题注；旧论文打开时重算一次。
+LOCATE_VERSION = "10"  # 正文保存跨栏、跨页的多个实测区域；旧论文打开时重算一次。
 
 
 def _norm(s: str) -> str:
@@ -206,6 +207,11 @@ def _locate(root: Path) -> dict:
         if manual and block.get("type") != "figure":
             layout[bid] = manual
             continue
+        if block.get("type") in ("para", "list"):
+            prose = locate_prose(block_english(block), page, stream)
+            if prose:
+                layout[bid] = prose
+                continue
         head, tail = _anchors(block_english(block))
         if not head:
             if manual:  # 没有题注可找：只能按模型给的框
@@ -269,7 +275,7 @@ def _clamp_overlaps(layout: dict):
     for locs in by_page.values():
         locs.sort(key=lambda l: l["box"][1])
         for i, cur in enumerate(locs):
-            if cur["src"] not in ("head", "text"):
+            if cur["src"] not in ("head", "text") or cur["_parent"].get("regions"):
                 continue
             nxt = next((l for l in locs[i + 1:] if l["_parent"] is not cur["_parent"]
                         and _overlap_x(l["box"], cur["box"][0], cur["box"][2])
@@ -289,8 +295,12 @@ def _fill_gaps(blocks: list[dict], layout: dict):
             continue
         page = block["page"]
         locs = _page_locs(layout, page)
-        prev = next((layout[b["id"]] for b in reversed(blocks[:i]) if layout.get(b.get("id"), {}).get("page") == page), None)
-        nxt = next((layout[b["id"]] for b in blocks[i + 1:] if layout.get(b.get("id"), {}).get("page") == page), None)
+        def on_page(b):
+            loc = layout.get(b.get("id"))
+            parts = _page_locs({"block": loc}, page) if loc else []
+            return {**loc, "page": page, "boxes": [p["box"] for p in parts]} if parts else None
+        prev = next((loc for b in reversed(blocks[:i]) if (loc := on_page(b))), None)
+        nxt = next((loc for b in blocks[i + 1:] if (loc := on_page(b))), None)
         if prev and prev.get("boxes"):
             prev = {**prev, "box": prev["boxes"][-1]}
         if nxt and nxt.get("boxes"):

@@ -1,6 +1,7 @@
 """回收站：删掉的论文整个文件夹挪到 文献库/.trash/<id>-<时间>，可以恢复、彻底删除、清空。"""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -51,7 +52,12 @@ def items(root: Path) -> list[dict]:
         m = _NAME.match(p.name)
         if not m or not p.is_dir():
             continue
-        meta = (read_json(p / "paper.json", {}) or {}).get("meta", {})
+        try:
+            meta = (read_json(p / "paper.json", {}) or {}).get("meta", {})
+        except (UnicodeError, json.JSONDecodeError):
+            # The library also counts these entries during startup. A damaged
+            # deleted paper must not block the active library or restoration.
+            meta = {"title_en": m.group(1)}
         out.append({"name": p.name, "id": m.group(1), "title_zh": meta.get("title_zh", ""), "title_en": meta.get("title_en", ""),
                     "authors": meta.get("authors", ""), "deleted": datetime.strptime(m.group(2), "%Y%m%d%H%M%S").isoformat(timespec="seconds")})
     return sorted(out, key=lambda x: x["deleted"], reverse=True)

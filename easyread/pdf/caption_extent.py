@@ -23,8 +23,10 @@ def column(locs: list[dict], box: list) -> tuple[float, float] | None:
 
 def page_locs(layout: dict, page: int) -> list[dict]:
     return [{"page": page, "box": box, "src": loc["src"], "_parent": loc}
-            for loc in layout.values() if loc["page"] == page
-            for box in loc.get("boxes") or [loc["box"]]]
+            for loc in layout.values()
+            for region in loc.get("regions") or [{"page": loc["page"], "box": box}
+                                                 for box in loc.get("boxes") or [loc["box"]]]
+            if region["page"] == page for box in [region["box"]]]
 
 
 def extend_captioned(blocks: list[dict], layout: dict, root: Path | None = None):

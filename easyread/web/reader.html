@@ -8,6 +8,8 @@
 <link rel="stylesheet" href="/web/vendor/katex/katex.min.css">
 <link rel="stylesheet" href="/web/css/base.css">
 <link rel="stylesheet" href="/web/css/reader.css">
+<link rel="stylesheet" href="/web/css/reader-navigation.css">
+<link rel="stylesheet" href="/web/css/reader-media.css">
 <link rel="stylesheet" href="/web/css/reading-language.css">
 <link rel="stylesheet" href="/web/css/sentences.css">
 <link rel="stylesheet" href="/web/css/reader-panels.css">
@@ -30,6 +32,7 @@
   <span class="grow"></span>
   <span class="job-state" id="jobState"></span>
   <button class="btn" id="chatgptBrowserBtn" type="button" hidden></button>
+  <button class="btn icon" id="findBtn" title="搜索原文与译文（Ctrl+F）" aria-label="搜索">⌕</button>
   <div class="seg view-seg" role="group" aria-label="正文显示">
     <button data-view="original"></button>
     <button data-view="translation"></button>
@@ -99,6 +102,9 @@
 <script src="/web/js/common/markup.js"></script>
 <script src="/web/js/reader/store.js"></script>
 <script src="/web/js/reader/render.js"></script>
+<script src="/web/js/reader/media-preview.js"></script>
+<script src="/web/js/reader/note-media.js"></script>
+<script src="/web/js/reader/note-media-drag.js"></script>
 <script src="/web/js/reader/sentences.js"></script>
 <script src="/web/js/reader/margin.js"></script>
 <script src="/web/js/reader/anchor.js"></script>
@@ -113,10 +119,12 @@
 <script src="/web/js/reader/chat.js"></script>
 <script src="/web/js/reader/notehelp.js"></script>
 <script src="/web/js/reader/jumpback.js"></script>
+<script src="/web/js/reader/find.js"></script>
 <script src="/web/js/reader/keys.js"></script>
 <script src="/web/js/reader/export.js"></script>
 <script src="/web/js/common/settings-models.js"></script>
 <script src="/web/js/common/settings-api.js"></script>
+<script src="/web/js/common/settings-custom-apis.js"></script>
 <script src="/web/js/common/settings.js"></script>
 <script src="/web/js/common/settings-tabs.js"></script>
 <script src="/web/js/common/settings-chat.js"></script>

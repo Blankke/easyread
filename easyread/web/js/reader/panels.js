@@ -268,7 +268,11 @@
     if (y + h > innerHeight - 10) y = r.top - h - 8;
     pop.style.left = x + "px"; pop.style.top = Math.max(58, y) + "px";
   };
-  PR.hidePopover = () => { clearTimeout(popHideT); PR.$("#popover").classList.remove("open"); };
+  PR.hidePopover = () => {
+    clearTimeout(popHideT);
+    const pop = PR.$("#popover"); pop.classList.remove("open");
+    if (pop.querySelector(".media-hover")) pop.replaceChildren();
+  };
   PR.hidePopoverSoon = () => { if (popSticky) return; clearTimeout(popHideT); popHideT = setTimeout(PR.hidePopover, 220); };
   PR.$("#popover").addEventListener("mouseenter", () => clearTimeout(popHideT));
   PR.$("#popover").addEventListener("mouseleave", () => PR.hidePopoverSoon());

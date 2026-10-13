@@ -13,7 +13,7 @@ from ..pdf import sources
 from ..translate import page_check
 from ..app.i18n import tr
 from ..app.log import log
-from .store import SCHEMA, Workspace, empty_discussion, empty_reader, now_iso, read_json, write_json_atomic
+from .store import SCHEMA, DataReadError, Workspace, empty_discussion, empty_reader, now_iso, read_json, write_json_atomic
 
 
 
@@ -77,7 +77,17 @@ class Library:
         }
 
     def list(self) -> list[dict]:
-        return [self.summary(ws) for ws in self.all()]
+        items = []
+        for ws in self.all():
+            try:
+                items.append(self.summary(ws))
+            except DataReadError as e:
+                # Keep the entry visible without treating unreadable notes as
+                # empty data, and without blocking unrelated papers.
+                items.append({"id": ws.id, "title_en": ws.id, "tags": [],
+                              "status": "unread", "load_error": tr(
+                                  "无法读取数据文件：{path}；原文件已保留，请从备份恢复或联系维护者", path=str(e.path))})
+        return items
 
     # ---------- 导入 ----------
     def create_from_pdf(self, data: bytes, filename: str, meta: dict | None = None) -> tuple[Workspace, bool]:

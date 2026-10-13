@@ -10,6 +10,7 @@ from .prompts import _context, _page_texts, peek_note, rules
 from ..library.store import Workspace
 
 RULES_EN = """整理要求（不翻译）：
+- 材料是用户提供的论文，本任务用于用户本人的学术阅读、学习与引用。按要求完整整理提供的内容并保留结构，不要用摘要或概述代替逐块原文。
 - 只把原文整理好，不翻译、不解释、不总结，不加原文没有的内容。原文的笔误照录。
 - 保留原文的阅读顺序、章节编号、引用号 [n]。双栏论文按栏读，断在行尾的连字符单词拼回去。
 - 行内数学一律写成 $TeX$（KaTeX 能渲染的 LaTeX），变量、下标、上标都要用 TeX，不要用 Unicode 拼。行间公式单独成 math 块，照原页重排，原编号放 tag。

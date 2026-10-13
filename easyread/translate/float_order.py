@@ -22,6 +22,10 @@ def _after(loc: dict, page: int, box: list) -> bool:
         return False
     top = (loc.get("boxes") or [loc["box"]])[0]
     wide = box[2] - box[0] > 0.5  # 横跨两栏的图表：任何一栏里在它下面的块都算后面
+    if not wide and top[2] - top[0] <= .5 and not _overlap_x(top, box[0], box[2]):
+        # Finish the left column before entering the right, even if a right
+        # column figure is higher on the page than a left column figure.
+        return top[0] >= .45 and box[2] <= .55
     return top[1] >= box[1] - 0.005 and (wide or _overlap_x(top, box[0], box[2]))
 
 

@@ -18,7 +18,7 @@ import threading
 from pathlib import Path
 
 from ..app.i18n import tr
-from . import agent_cli, codex_lean, netcheck, usage
+from . import agent_cli, codebuddy_cli, codex_lean, netcheck, usage
 from ..app.log import log
 
 
@@ -36,9 +36,9 @@ class Cancelled(RuntimeError):
     pass
 
 
-ENGINE_NAMES = {"claude": "Claude Code", "codex": "Codex CLI", **{k: v["name"] for k, v in agent_cli.SPECS.items()},
+ENGINE_NAMES = {"claude": "Claude Code", "codex": "Codex CLI", "codebuddy": "CodeBuddy CLI", **{k: v["name"] for k, v in agent_cli.SPECS.items()},
                 "openai": "API", "chatgpt_web": "ChatGPT 网页", "none": "不翻译"}  # i18n-ok 显示时用 engine_name()
-CLI_ENGINES = ("claude", "codex", *agent_cli.ENGINES)  # 本机 CLI：起子进程、用已登录的订阅
+CLI_ENGINES = ("claude", "codex", "codebuddy", *agent_cli.ENGINES)  # 本机 CLI：起子进程、用已登录的订阅
 
 
 def engine_name(engine: str | None) -> str:
@@ -66,6 +66,8 @@ def _run(cfg: dict, prompt: str, cwd: Path, images: list[Path] | None, cancel: t
         return run_claude(cfg["claude"], prompt, cwd, cancel, meter)
     if engine == "codex":
         return run_codex(cfg["codex"], prompt, cwd, images or [], cancel, meter)
+    if engine == "codebuddy":
+        return codebuddy_cli.run(cfg["codebuddy"], prompt, cwd, images or [], cancel, meter)
     if engine == "openai":
         return run_openai(cfg["openai"], prompt, images or [], cancel, meter)
     if engine in agent_cli.ENGINES:
@@ -78,7 +80,7 @@ def image_mode(cfg: dict) -> str:
     engine = cfg.get("engine")
     if engine == "claude" or engine in agent_cli.ENGINES:
         return "claude"
-    if engine in ("codex", "chatgpt_web") or (engine == "openai" and cfg["openai"].get("vision")):
+    if engine in ("codex", "codebuddy", "chatgpt_web") or (engine == "openai" and cfg["openai"].get("vision")):
         return "attached"
     return "text"
 
@@ -111,6 +113,8 @@ def cli_path(engine: str, c: dict) -> str | None:
         return claude_path(c)
     if engine == "codex":
         return codex_path(c)
+    if engine == "codebuddy":
+        return codebuddy_cli.path(c)
     return agent_cli.path(engine, c)
 
 
@@ -263,70 +267,15 @@ def run_openai(c: dict, prompt: str, images: list[Path], cancel=None, meter=None
     return openai_api.complete(c, prompt, images, cancel, meter)
 
 
-_TEX_COMMANDS = frozenset({"begin", "bar", "beta", "frac", "nabla", "nu", "operatorname", "overline",
-                           "right", "rm", "sqrt", "text", "times", "top", "underbrace"})
-_TEX_COMMAND_PATTERN = re.compile(r"[A-Za-z]+")
-
-
-def _repair_json_escapes(body: str) -> str:
-    """只修 JSON 字符串内的反斜杠，防止 TeX 命令被当成 JSON 的换行或制表符。"""
-    out = []
-    inside = math = tex = False
-    i = 0
-    while i < len(body):
-        char = body[i]
-        if not inside:
-            if char == '"':
-                inside = True
-                tex = bool(re.search(r'"tex"\s*:\s*$', body[max(0, i - 80):i]))
-                math = False
-        elif char == '"':
-            inside = math = tex = False
-        elif char == "$":
-            # $$ 是一个行间公式边界，不能连续翻转两次。
-            pair = body.startswith("$$", i)
-            math = not math
-            out.append("$$" if pair else "$")
-            i += 2 if pair else 1
-            continue
-        elif char == "\\":
-            nxt = body[i + 1] if i + 1 < len(body) else ""
-            if nxt in ('"', "\\"):
-                out.extend((char, nxt))
-                i += 2
-                continue
-            command = _TEX_COMMAND_PATTERN.match(body, i + 1)
-            tex_command = bool(command and command.group() in _TEX_COMMANDS)
-            unicode_escape = nxt == "u" and bool(re.fullmatch(r"[0-9a-fA-F]{4}", body[i + 2:i + 6]))
-            if ((math or tex or tex_command) and not unicode_escape) or not (nxt in "/bfnrt" or unicode_escape):
-                out.append("\\")
-        out.append(char)
-        i += 1
-    return "".join(out)
-
-
 def parse_json(text: str):
     """从模型输出里取出 JSON（容忍 ```json 围栏和前后废话）。"""
-    t = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()  # 推理模型（deepseek-r1、qwen3）先输出的思考过程
-    # 先取最外层的 { … }：译文里可能本身带代码块（论文附录的 PyTorch 代码），按 ``` 围栏切会切到半截
-    bodies = []
-    for s in (t, *(m.group(1).strip() for m in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", t))):
-        start = min([i for i in (s.find("{"), s.find("[")) if i >= 0], default=-1)
-        if start >= 0:
-            end = max(s.rfind("}"), s.rfind("]"))
-            bodies.append(s[start:end + 1] if end >= start else s[start:])
-    if not bodies:
+    from .model_json import extract
+    obj, error = extract(text)
+    if obj is not None:
+        return obj
+    if error is None:
         raise InvalidModelOutput(tr("模型输出里没有 JSON：{out}", out=text[:200]))
-    first = None
-    for body in bodies:
-        fixed = _repair_json_escapes(body)
-        # 优先解析公式转义修复后的内容；若它仍不合法，再试原文。
-        for candidate in (fixed, body) if fixed != body else (body,):
-            try:
-                return json.loads(candidate, strict=False)
-            except json.JSONDecodeError as e:
-                first = first or e
-    raise InvalidModelOutput(tr("模型输出的 JSON 格式有错（{err}）", err=first))
+    raise InvalidModelOutput(tr("模型输出的 JSON 格式有错（{err}）", err=error))
 
 
 def _version(exe: str) -> str:

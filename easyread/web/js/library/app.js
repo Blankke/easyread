@@ -47,7 +47,7 @@
     clearTimeout(pollT);
     if (loadController) loadController.abort();
     const controller = (loadController = new AbortController());
-    let timer;
+    let timer, responded = false, timedOut = false;
     if (restorePending && restoreView === null) restoreView = viewKey();
     // Poll an already loaded list in the background: inserting a status row
     // on every request shifts the papers and resets their DOM twice per poll.
@@ -56,11 +56,13 @@
     try {
       const deadline = new Promise((resolve, reject) => {
         timer = setTimeout(() => {
+          timedOut = true;
           reject(new Error(PR.t("文献库加载超时，请重试")));
           controller.abort();
         }, 10000);
       });
       const request = Promise.resolve().then(() => fetch("/api/library", { cache: "no-store", signal: controller.signal })).then(async (r) => {
+        responded = true;
         const d = await r.json();
         if (!r.ok) throw new Error(d.error || PR.t("请求失败 {status}", { status: r.status }));
         if (!validData(d)) throw new Error(PR.t("文献库数据不完整，请重试"));
@@ -79,6 +81,8 @@
       return true;
     } catch (e) {
       if (seq !== loadSeq) return false;
+      // A response proves the server is reachable, even when its data is unreadable.
+      L.loadErrorTitle = responded || timedOut ? PR.t("文献库加载失败") : PR.t("连不上本地服务");
       L.loadStatus = "error"; L.loadError = e.message || String(e); L.render();
       pollT = setTimeout(() => L.load(), retryMs);
       retryMs = Math.min(retryMs * 2, 15000);
@@ -134,6 +138,7 @@
     return '<span class="pill ' + (i.status || "unread") + '">' + (m[i.status] || m.unread) + "</span>";
   }
   L.jobLine = function (i) {
+    if (i.load_error) return '<span class="stat err">' + PR.t("数据文件无法读取") + "</span>";
     const j = i.job;
     if (j && j.state === "confirm") return '<span class="stat">' + PR.t("等你确认") + "</span>";
     if (j && ["queued", "running"].includes(j.state)) {
@@ -178,7 +183,7 @@
     else PR.renderDetail && PR.renderDetail();
   };
   function loadHtml() {
-    if (L.loadStatus === "error") return PR.t("连不上本地服务") + " · " + PR.esc(L.loadError) +
+    if (L.loadStatus === "error") return (L.loadErrorTitle || PR.t("文献库加载失败")) + " · " + PR.esc(L.loadError) +
       ' <button class="btn sm line" data-library-retry>' + PR.t("重试") + "</button>";
     return '<span class="spin"></span> ' + (L.items.length ? PR.t("正在更新文献库…") : PR.t("正在加载文献库…"));
   }

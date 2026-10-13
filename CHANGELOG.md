@@ -1,5 +1,19 @@
 # 更新记录
 
+## v1.4.2（2026-10-13）
+
+- **模型输出解析与翻译任务调度改进**（[PR #64](https://github.com/Edwardxlai/easyread/pull/64)，@bisuwuss-netizen）：默认仍逐篇处理论文，保留每篇内部的分段并发。在“设置 → 模型 → 翻译”中可通过“同时翻译几篇”手动开启多篇并行，默认 1 篇、最多 4 篇，重启后生效；设置中明确提示多篇并行会叠加每篇的分段并发，增加内存及模型限流风险，建议保持 1 篇。修复模型说明中的 `[n]` 引用被误当 JSON、支持完整对象或块数组输出，并补充用户提供论文用于本人学术阅读、按任务完整逐块输出的提示；同时防止旧任务结束时清掉重排任务的取消状态。真实模型限流、内存和新提示词效果尚未实测；[配置说明](docs/paper-concurrency.md)
+- **复制含公式的文字不再逐字换行**（[#65](https://github.com/Edwardxlai/easyread/issues/65)）：通过 Ctrl / ⌘ + C 或右键复制含公式的正文选区时，使用阅读器整理后的纯文本，避免把公式的逐字排版层和隐藏内容一起粘贴出去
+- **共读技能适配不同安装方式**（[#66](https://github.com/Edwardxlai/easyread/issues/66)）：移除作者本机 Windows 路径，补全源码、pip 和三平台桌面后端的调用方式；根据 `status` 输出定位实际论文目录
+- **跨页、跨栏续文不再被误收进图片**（[#67](https://github.com/Edwardxlai/easyread/issues/67)）：裁图时补充识别布局框漏掉的长段落文字，避免正文被当作图片标签扩大裁剪框、影响图片顺序；旧定位结果会刷新。已通过生成 PDF 的针对性测试，尚未使用报告者的同一份数据验收
+- **单篇数据文件损坏不再让整库加载失败**（[#68](https://github.com/Edwardxlai/easyread/issues/68)）：无法解码或解析的论文数据单独标出，详情显示出错文件路径，其他论文仍可访问；回收站中的异常数据也不再阻塞首页。启动时跳过损坏的任务状态文件并记录日志；服务已响应但数据加载失败时，不再误报“连不上本地服务”。保留原文件，不会用空笔记覆盖它；这项修复不会自动恢复已损坏的数据，报告者文件的损坏原因尚未确认
+- **搜索原文和译文**（[#59](https://github.com/Edwardxlai/easyread/issues/59)）：阅读页点击顶栏搜索按钮或按 Ctrl / ⌘ + F，显示匹配数并高亮结果；用上下按钮或 Enter / Shift + Enter 跳到下一处 / 上一处，Esc 关闭。结果在另一种语言里时会切到双语显示，便于核对
+- **回看笔记并对照图表**（[#60](https://github.com/Edwardxlai/easyread/issues/60)）：笔记列表直接滚动翻阅，点击卡片定位正文，点“编辑”才进入编辑。笔记可通过缩略图选择或从正文拖拽关联图表，单击图表行展开／收起，点击铅笔在卡片内直接修改图表名称，Enter 或点击别处保存、Esc 取消；正文图表引用支持悬停预览。移除多余的上一条／下一条等按钮，并修复切换、关闭或退出编辑后空笔记残留的问题；只有图表或划线的笔记会保留
+- **保存和复用自定义 API**（[#61](https://github.com/Edwardxlai/easyread/issues/61)）：可以保存接口名称和地址，之后从“已保存的自定义接口”里直接选用。同一接口添加其他模型时可沿用已存 Key；不同接口的 Key 按地址分别保存，切换地址不会混用。模型卡片显示接口名称，设置内容刷新后保留滚动位置
+- **CodeBuddy CLI**（[#63](https://github.com/Edwardxlai/easyread/issues/63)）：翻译和问 AI 都能使用。本机安装并登录后，在设置 → 模型 → 添加模型里选择 CodeBuddy CLI，不用另外填 API Key；模型名自己填，留空使用 CLI 默认模型。接入的是 CodeBuddy 的[无头 CLI](https://www.codebuddy.cn/docs/cli/headless)，需要账号具有 CLI 使用权益；按[当前官方套餐说明](https://www.codebuddy.cn/docs/workbuddy/Pricing)，免费体验版不含 CLI 访问，WorkBuddy 与 CodeBuddy 同账号共享积分，实际可用模型和用量以账号套餐为准
+- 验证记录：API Key 隔离与 CodeBuddy CLI 的 8 项 Python、裁图相关 41 项 Python、#68 收尾的 21 项 Python／前端针对性检查通过；模型解析、并发与取消保护已有针对性测试。浏览器已验证搜索跳转、公式复制粘贴、笔记关联与拖拽保存、空笔记清理、图表改名持久化、并发设置保存；普通离线版和手机版导出检查通过。真实 CodeBuddy CLI 2.164.0 / fast-model 文本翻译已通过
+- 验证边界：未使用 #67 报告者的同一份论文数据或 #68 的实际损坏文件验收；CodeBuddy 整页含图翻译与真实问 AI 对话、多篇并发的真实限流和内存、新提示词效果、三平台安装与从 v1.4.1 应用内升级仍待实测
+
 ## v1.4.1
 
 - 翻译和问 AI 多了三个本机 CLI：**Grok Build、Antigravity CLI、Cursor CLI**（[#50](https://github.com/Edwardxlai/easyread/issues/50)，@gulubao）。和 Claude Code、Codex 一样，本机装好并登录后，在设置 → 模型 → 添加模型里选它，用的是你已有的订阅（X / SuperGrok、Google 会员、Cursor），不用 Key。模型名自己填，留空就用 CLI 自己的默认模型（Grok 可以用 `grok models` 查，比如 `grok-4.7`；Antigravity 用 `agy models` 查，比如 `gemini-3.8-flash-high`）；Grok 和 Antigravity 还能选推理强度。三家都按只读方式调用，不会改你的文件：只让它们读文件看原页图，不跑命令、不联网搜索。Grok 没选推理强度时用 low，不然一页要想 10 分钟左右。长提示词不走命令行，不会撞上 Windows 命令行的长度上限。Cursor 的输出里没有 token 用量，翻译进度里看不到它花了多少。

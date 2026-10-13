@@ -15,7 +15,8 @@ from ..engines.engines import Cancelled, EngineError
 from ..app.i18n import tr
 from ..library.library import Library
 from ..app.log import log
-from ..library.store import Workspace, now_iso
+from ..library.store import DataReadError, Workspace, now_iso
+from .paper_workers import worker_count
 
 
 def engine_for(cfg: dict, model: str | None) -> dict:
@@ -39,8 +40,9 @@ class Jobs:
         self.recent: list[dict] = []  # 小任务的状态，给页面轮询
         self.lock = threading.Lock()
         self._resume()
-        for target in (self._bulk_loop, self._small_loop):
-            threading.Thread(target=target, daemon=True).start()
+        threading.Thread(target=self._small_loop, daemon=True).start()
+        for _ in range(worker_count(config.load())):
+            threading.Thread(target=self._bulk_loop, daemon=True).start()
 
     # ---------- 整篇 ----------
     def _write(self, ws: Workspace, **fields):
@@ -114,7 +116,12 @@ class Jobs:
 
     def _resume(self):
         for ws in self.lib.all():
-            job = ws.load("job") or {}
+            try:
+                job = ws.load("job") or {}
+            except DataReadError as e:
+                # Preserve unreadable state for recovery; other papers can still resume.
+                log.exception("Cannot resume task; unreadable data file: %s", e.path)
+                continue
             if job.get("state") in ("queued", "running"):
                 self._write(ws, state="queued", message=tr("排队中（服务重启后继续）"))
                 self.bulk.put(ws.id)
@@ -127,9 +134,6 @@ class Jobs:
             except Exception:  # noqa: BLE001
                 # 启动或收尾（包括写错误状态）也可能失败，不能让一篇论文停掉整条队列。
                 log.exception("后台任务出错 %s", pid)
-            finally:
-                with self.lock:
-                    self.cancels.pop(pid, None)
 
     def _process_bulk(self, pid: str):
         with self.lock:
@@ -140,7 +144,11 @@ class Jobs:
             if job.get("state") != "queued":
                 return
             cancel = self.cancels[pid] = threading.Event()
-            self._write(ws, state="running", message=tr("正在开始任务"))
+            try:
+                self._write(ws, state="running", message=tr("正在开始任务"))
+            except Exception:
+                self.cancels.pop(pid, None)
+                raise
         try:
             self._run_bulk(ws, job, cancel)
         except Cancelled:
@@ -156,6 +164,11 @@ class Jobs:
                 translate.journal(ws, tr("出错停止：{msg}", msg=msg[:500]))
             except OSError:
                 pass
+        finally:
+            with self.lock:
+                # An immediate retry may already have registered its own event.
+                if self.cancels.get(pid) is cancel:
+                    self.cancels.pop(pid, None)
 
     def _run_bulk(self, ws: Workspace, job: dict, cancel: threading.Event):
         cfg = engine_for(config.load(), job.get("model"))

@@ -6,6 +6,17 @@ const paper = (title = "Existing long article") => ({ id: "longpaper", title_en:
 const data = (items = [paper()]) => ({ items, engine: "none", token: "live-token", first_run: false, version: "1.3.1" });
 const welcome = p => p.node("#list").innerHTML.includes('class="welcome"');
 
+test("unreadable paper stays visible without hiding healthy papers or showing offline", async () => {
+  const broken = { id: "broken000001", title_en: "broken000001", tags: [], load_error: "damaged reader.json" };
+  const p = page().library([paper(), broken]);
+  await p.boot();
+  assert.equal(p.PR.lib.loadStatus, "ready");
+  assert.match(p.node("#list").innerHTML, /Existing long article/);
+  assert.match(p.node("#list").innerHTML, /broken000001/);
+  assert.match(p.node("#list").innerHTML, /数据文件无法读取/);
+  assert.doesNotMatch(p.node("#list").innerHTML, /连不上本地服务/);
+});
+
 test("idle polling keeps loaded rows in place without an updating banner", async () => {
   const p = page().library([paper()]); await p.boot();
   const pending = deferred(), row = p.rows[0], html = p.node("#list").innerHTML;
@@ -140,6 +151,7 @@ test("a timed-out request is aborted and its late empty response cannot replace 
   assert.equal(p.requests[0].options.signal.aborted, true);
   assert.equal(p.PR.lib.loadStatus, "error");
   assert.match(p.node("#list").innerHTML, /文献库加载超时/);
+  assert.doesNotMatch(p.node("#list").innerHTML, /连不上本地服务/);
   assert.equal(welcome(p), false);
   await p.advance(1500);
   retry.resolve(data()); await p.flush();
@@ -168,6 +180,9 @@ test("incomplete responses and synchronous read failures never count as an empty
     await p.boot();
     assert.equal(p.PR.lib.loadStatus, "error");
     assert.equal(welcome(p), false);
+    const html = p.node("#list").innerHTML;
+    assert.match(html, result === "throw" ? /连不上本地服务/ : /文献库加载失败/);
+    if (result !== "throw") assert.doesNotMatch(html, /连不上本地服务/);
   }
 });
 

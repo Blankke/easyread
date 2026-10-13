@@ -21,7 +21,7 @@
     const notes = PR.myNotes();
     notes.forEach((n) => (noteById[n.id] = n));
     for (const n of notes) {
-      if (n.kind === "highlight" && !(n.body || "").trim() && PR.editingNote !== n.id) continue;
+      if (n.kind === "highlight" && !(n.body || "").trim() && !PR.noteMedia.has(n) && PR.editingNote !== n.id) continue;
       push(anchorOf(n.anchor), { src: "mine", t: n.created || n.updated || "", data: n });
     }
     for (const e of S.discussion.entries || []) {
@@ -55,13 +55,13 @@
     const body = editing
       ? '<textarea placeholder="' + (d.kind === "question" ? PR.t("想问什么？可以点“让模型回答”，也可以留给下次和 agent 讨论") : PR.t("写下你的理解、疑问或联想…（支持 $公式$、**粗体**）")) + '">' + PR.esc(d.body || "") + "</textarea>" +
         '<div class="kinds"><button data-k="note" class="' + (d.kind !== "question" ? "on" : "") + '">' + PR.t("笔记") + '</button><button data-k="question" class="' + (d.kind === "question" ? "on" : "") + '">' + PR.t("问题") + "</button>" +
-        colorDots(d) + '<span class="hint">' + PR.t("自动保存 · Esc 收起") + "</span></div>"
+        colorDots(d) + '<span class="hint">' + PR.t("自动保存 · Esc 收起") + '</span></div><div class="acts"><button data-note-media="add">' + PR.t("关联图表") + '</button></div>'
       : '<div class="body">' + PR.mdBlocks(d.body) + "</div>" + (ask ? '<div class="ask-row">' + ask + "</div>" : "") +
-        '<div class="acts"><button data-a="edit">' + PR.t("编辑") + '</button><button data-a="kind">' + (d.kind === "question" ? PR.t("改成笔记") : PR.t("改成问题")) + '</button><button data-a="del">' + PR.t("删除") + "</button></div>";
+        '<div class="acts"><button data-a="edit">' + PR.t("编辑") + '</button><button data-note-media="add">' + PR.t("关联图表") + '</button><button data-a="kind">' + (d.kind === "question" ? PR.t("改成笔记") : PR.t("改成问题")) + '</button><button data-a="del">' + PR.t("删除") + "</button></div>";
     return '<div class="card mine' + (editing ? " editing" : "") + (d.color ? " c-" + d.color : "") + '" data-note="' + PR.esc(d.id) + '" data-anchor="' + PR.esc(item.anchor) + '">' +
       '<div class="lbl"><span>' + lbl + '</span><span class="meta">' + PR.shortTime(d.updated || d.created) + "</span></div>" +
       (d.quote ? '<div class="quote' + lost + '"' + (d.side === "en" ? ' lang="en"' : "") + ">" + (d.side === "en" ? '<span class="side-tag">' + PR.t("原文") + "</span>" : "") +
-        PR.t("「{q}」", { q: PR.md(d.quote, { cite: false, xref: false }) }) + "</div>" : "") + body + "</div>";
+        PR.t("「{q}」", { q: PR.md(d.quote, { cite: false, xref: false }) }) + "</div>" : "") + body + PR.noteMedia.html(d, editingId !== undefined ? "panel" : "margin") + "</div>";
   }
   PR.cardHtml = cardHtml;
   PR.collectNotes = collect;
@@ -147,6 +147,7 @@
 
   PR.openNoteEditor = function (id) {
     if (PR.notesPanelOpen && PR.notesPanelOpen()) { PR.renderNotesPanel(id); return; }
+    if (PR.editingNote && PR.editingNote !== id) PR.closeNoteEditor();
     PR.editingNote = id;
     const n = noteById(id);
     PR.renderMargin();
@@ -166,16 +167,20 @@
     if (!id) return;
     const ta = PR.$('.card[data-note="' + id + '"] textarea');
     const n = noteById(id);
+    PR.autosaveNote.cancel();
     PR.editingNote = null;
-    if (n && ta) PR.finishNote(n, ta.value);
+    if (n) PR.finishNote(n, ta ? ta.value : n.body || "");
     PR.renderMargin();
     PR.applyMarks && PR.applyMarks();
   };
   /* 结束编辑：空笔记有原话就退回成划线，没有就删掉 */
   PR.finishNote = function (n, value) {
+    if (n.deleted) return;
     const body = value.trim();
-    if (!body && n.kind !== "highlight") {
-      if (n.quote) PR.saveNote(Object.assign({}, n, { kind: "highlight", body: "" }));
+    if (!body && !PR.noteMedia.has(n) && !PR.noteMedia.isChoosing(n.id)) {
+      if ((n.quote || "").trim()) {
+        if (n.kind !== "highlight" || n.body) PR.saveNote(Object.assign({}, n, { kind: "highlight", body: "" }));
+      }
       else PR.commit({ op: "note_del", id: n.id });
     } else if (body !== (n.body || "")) PR.saveNote(Object.assign({}, n, { body, kind: n.kind === "highlight" ? "note" : n.kind }));
   };
@@ -217,10 +222,11 @@
     }
   });
   document.addEventListener("focusout", (e) => {
-    if (!e.target.matches("#margin .card textarea, .inline-notes .card textarea")) return;
+    if (!e.target.closest("#margin .card[data-note], .inline-notes .card[data-note]")) return;
     setTimeout(() => {
       const card = e.target.closest(".card");
       if (!card || !card.isConnected) return;   // 卡片被重排替换掉了，新卡片已接手编辑
+      if (PR.noteMedia.isChoosing(card.dataset.note)) return;
       if (card.contains(document.activeElement)) return;
       if (PR.editingNote === card.dataset.note) { PR.autosaveNote.flush(); PR.closeNoteEditor(); }
     }, 150);
