@@ -4,12 +4,19 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const windowState = require("./window-state.cjs");
+const { installWindowControls } = require("./window-controls.cjs");
 const { URL } = require("url");
 const http = require("http");
 const startup = require("./startup-feedback.cjs");
 const { registerUpdates } = require("./desktop-updates.cjs");
 const deepLink = require("./deep-link.cjs");
 const dataDir = require("./data-dir.cjs");
+const { randomBytes } = require("crypto");
+const { WebContentsView } = require("electron");
+const webBridgeSecret = randomBytes(32).toString("hex");
+let chatgptWeb;
+let webPollTimer;
+let webHeartbeatTimer;
 
 // 窗口缓存等放 %APPDATA%\EasyRead（默认会用 package.json 的 name，叫 easyread-desktop）。
 // 论文和设置不放这里：Windows 安装版放 <安装目录>\data（见 data-dir.cjs），其余平台用 ~/EasyRead。
@@ -72,7 +79,7 @@ function startBackend() {
   if (backendReady) return backendReady;
   backendReady = (async () => {
   const launch = backendCommand();
-  const env = { ...process.env, PYTHONUTF8: "1", EASYREAD_SYSTEM_LANG: app.getLocale() };  // 后端按它决定界面语言
+  const env = { ...process.env, PYTHONUTF8: "1", EASYREAD_SYSTEM_LANG: app.getLocale(), EASYREAD_WEB_BRIDGE_SECRET: webBridgeSecret };  // 后端按它决定界面语言
   startup.mark(app, "shell-path-start");
   const shellPath = await startup.loginShellPath(process.platform);
   startup.mark(app, "shell-path-ready");
@@ -152,6 +159,77 @@ function backendJson(endpoint, token) {
   });
 }
 
+// 桌面主进程持有桥凭据；阅读页只通过受信 IPC 查询登录和模型状态。
+function webBridgeRequest(endpoint, body) {
+  return new Promise((resolve, reject) => {
+    const data = body == null ? "" : JSON.stringify(body);
+    const req = http.request(new URL(endpoint, backendUrl), { method: body == null ? "GET" : "POST",
+      headers: { "X-Desktop-Bridge": webBridgeSecret, ...(body == null ? {} : { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) }) } }, res => {
+      let out = "";
+      res.setEncoding("utf8");
+      res.on("data", chunk => { out += chunk; });
+      res.on("end", () => {
+        try {
+          const value = JSON.parse(out);
+          if (res.statusCode !== 200) throw new Error(value.error || `HTTP ${res.statusCode}`);
+          resolve(value);
+        } catch (error) { reject(error); }
+      });
+    });
+    req.setTimeout(10000, () => req.destroy(new Error("ChatGPT 网页任务桥超时")));
+    req.on("error", reject);
+    req.end(data || undefined);
+  });
+}
+
+async function pollWebBridge() {
+  if (!chatgptWeb || quitting || !backendUrl) return;
+  let delay = 800;
+  try {
+    const next = await webBridgeRequest("/api/desktop/web/next");
+    if (next.request) await chatgptWeb.execute(next.request, async event => {
+      let ack, failure;
+      // 网络确认丢失时用原请求编号和原序号重发，由后端去重，避免译文增量重复拼接。
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try { ack = await webBridgeRequest("/api/desktop/web/event", event); break; }
+        catch (error) {
+          failure = error;
+          if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+        }
+      }
+      if (!ack) throw failure;
+      if (ack.cancelled) chatgptWeb.cancel();
+    });
+    // 有任务时立即领取下一项；只有空队列或连接失败才退回间隔轮询。
+    if (next.request) delay = 0;
+  } catch (error) {
+    // 后端重启时轮询会恢复；具体网页任务错误由任务本身回传。
+    console.warn("ChatGPT 网页任务桥：", error.message);
+  } finally {
+    if (chatgptWeb && !quitting) webPollTimer = setTimeout(pollWebBridge, delay);
+  }
+}
+
+function startChatGPTWeb() {
+  if (!WebContentsView || chatgptWeb || !mainWindow) return;
+  chatgptWeb = require("./chatgpt-web.cjs").createChatGPTWeb({ app, window: mainWindow, BrowserWindow, WebContentsView, ipcMain });
+  // 项目由第一项任务按需配置；启动期间不反复导航或重试设置，避免覆盖正在续译的会话。
+  clearTimeout(webHeartbeatTimer);
+  const beat = async () => {
+    if (backendUrl && chatgptWeb) await webBridgeRequest("/api/desktop/web/heartbeat").catch(() => {});
+    if (chatgptWeb && !quitting) webHeartbeatTimer = setTimeout(beat, 3000);
+  };
+  webHeartbeatTimer = setTimeout(beat, 3000);
+  clearTimeout(webPollTimer);
+  pollWebBridge();
+}
+
+ipcMain.handle("easyread:web-status", async event => { trustedWindow(event); return chatgptWeb ? chatgptWeb.status() : { ready: false }; });
+ipcMain.handle("easyread:web-models", async event => { trustedWindow(event); return chatgptWeb.models(); });
+ipcMain.handle("easyread:web-open", async event => { trustedWindow(event); chatgptWeb.show(); return { ok: true }; });
+ipcMain.handle("easyread:web-close", async event => { trustedWindow(event); chatgptWeb.hide(); return { ok: true }; });
+ipcMain.handle("easyread:web-clear-pending", async event => { trustedWindow(event); return chatgptWeb.clearPending(); });
+
 async function stopBackendGracefully() {
   const child = backend;
   if (!child) return;
@@ -226,8 +304,10 @@ async function createWindow() {
   const state = windowState.options();
   mainWindow = new BrowserWindow({
     ...state.opts,
-    minWidth: 960,
-    minHeight: 680,
+    // 保留 Windows 原生标题栏及贴靠行为；较小下限允许半屏阅读。
+    frame: true,
+    minWidth: 640,
+    minHeight: 520,
     icon: path.join(__dirname, "assets", "icon.ico"),
     show: false,
     webPreferences: {
@@ -236,6 +316,7 @@ async function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
     },
   });
+  installWindowControls(mainWindow, state.zoomFactor, process.platform);
   mainWindow.webContents.setWindowOpenHandler(({ url: target }) => {
     if (/^https?:/i.test(target)) shell.openExternal(target);
     return { action: "deny" };
@@ -259,7 +340,8 @@ async function createWindow() {
     if (state.maximized) openingWindow.maximize();
     openingWindow.show();
   });
-  mainWindow.on("closed", () => { mainWindow = undefined; });
+  mainWindow.on("closed", () => { chatgptWeb = undefined; clearTimeout(webPollTimer); clearTimeout(webHeartbeatTimer);
+    mainWindow = undefined; });
   try {
     await openingWindow.loadURL(startup.loadingUrl(isZh()));
     if (mainWindow !== openingWindow || quitting) return;
@@ -271,6 +353,7 @@ async function createWindow() {
     const first = pendingOpen ? new URL(pendingOpen, url).href : url;
     pendingOpen = undefined;
     await openingWindow.loadURL(first);
+    startChatGPTWeb();
     startup.mark(app, "library-loaded");
   } catch (error) {
     if (mainWindow !== openingWindow || quitting) return;
@@ -316,6 +399,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on("before-quit", event => {
     if (quitting) return;
     quitting = true;
+    clearTimeout(webPollTimer);
+    clearTimeout(webHeartbeatTimer);
     if (!backend) return;
     event.preventDefault();
     stopBackendGracefully().catch(stopBackend).finally(() => app.quit());

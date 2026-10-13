@@ -106,6 +106,16 @@
     }
   }
   PR.flush = flush;
+  PR.flushPending = async function () {
+    // 发送网页提问前等待阅读标记写入后端，附件才能取到同一版本。
+    const until = Date.now() + 15000;
+    while (outbox.length || flushing) {
+      if (!flushing) await flush();
+      if (!outbox.length && !flushing) return;
+      if (Date.now() > until) throw new Error(PR.t("阅读标记尚未保存，请稍后重试"));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  };
 
   async function reloadToken() {
     try { PR.token = (await (await fetch(base() + "/state", { cache: "no-store" })).json()).token; } catch (e) { /* 下次重试 */ }

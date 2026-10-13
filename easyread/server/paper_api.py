@@ -12,6 +12,10 @@ from ..app.i18n import tr
 def post(app, ws, parts: list[str], body: dict):
     """返回要回给页面的 JSON；不认识的 action 返回 None。"""
     action = parts[4]
+    if action == "chat" and len(parts) > 5 and parts[5] == "cancel":
+        from ..engines import chatgpt_web
+        chatgpt_web.cancel_paper_chat(ws.root)
+        return {"ok": True}
     if action == "chat" and len(parts) > 5:
         sub, tid = parts[5], body.get("thread", "")
         if sub == "pin":

@@ -98,6 +98,8 @@ def engine_cfg(cfg: dict, mid: str | None) -> tuple[dict, dict]:
         out[m["engine"]]["model"] = m.get("model") or ""
         for key in ("reasoning_effort", "service_tier"):
             out[m["engine"]][key] = m.get(key) or ""
+    elif m["engine"] == "chatgpt_web":
+        out["chatgpt_web"] = {"model": m.get("model") or ""}
     elif m["engine"] == "openai":
         p = next((x for x in PRESETS if x["id"] == m.get("preset")), None)
         out["openai"] = {**out["openai"], "preset": m.get("preset") or "", "vision": False,
@@ -119,6 +121,8 @@ def translation_id(cfg: dict) -> str:
         if any((m.get(k) or "") != (cfg.get(e, {}).get(k) or "") for k in ("reasoning_effort", "service_tier")):
             continue
         if e in engines.CLI_ENGINES and (m.get("model") or "") == (cfg.get(e, {}).get("model") or ""):
+            return m["id"]
+        if e == "chatgpt_web" and (m.get("model") or "") == (cfg.get(e, {}).get("model") or ""):
             return m["id"]
         if e == "openai":
             o = cfg.get("openai", {})
@@ -145,7 +149,12 @@ def listing(cfg: dict) -> dict:
     out = []
     for m in models(cfg):
         e = m.get("engine")
-        if e in engines.CLI_ENGINES:
+        if e == "chatgpt_web":
+            from ..engines import chatgpt_web
+            ready = chatgpt_web.available()
+            source = tr("ChatGPT 网页")
+            hint = "" if ready else tr("请在桌面版打开并登录 ChatGPT")
+        elif e in engines.CLI_ENGINES:
             ready = bool(found.get(e, {}).get("found"))
             source = engines.engine_name(e)
             hint = "" if ready else tr("本机没找到 {source}", source=source)
@@ -166,7 +175,7 @@ def sanitize(items: list[dict]) -> list[dict]:
     out, seen = [], set()
     for k, m in enumerate(items or []):
         e = m.get("engine")
-        if e not in (*engines.CLI_ENGINES, "openai") or (e == "openai" and not (m.get("preset") or m.get("base_url"))):
+        if e not in (*engines.CLI_ENGINES, "openai", "chatgpt_web") or (e == "openai" and not (m.get("preset") or m.get("base_url"))):
             continue
         mid = re.sub(r"[^\w\-]", "-", str(m.get("id") or f"m{k}"))[:40] or f"m{k}"
         while mid in seen:

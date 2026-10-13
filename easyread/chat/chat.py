@@ -164,7 +164,7 @@ def _marks_summary(ws: Workspace) -> str:
 
 
 def prompt(ws: Workspace, messages: list[dict], anchor: str | None, quote: str, engine: str, refs: list[dict] | None = None,
-           answer_style: str = answer_styles.DEFAULT) -> str:
+           answer_style: str = answer_styles.DEFAULT, answer_depth: str = "balanced") -> str:
     answer_style = answer_styles.parse(answer_style)
     history = messages[-HISTORY:]
     convo = "\n\n".join(("读者" if m["role"] == "user" else "你") + "：" + m["content"] for m in history[:-1])  # i18n-ok
@@ -176,13 +176,19 @@ def prompt(ws: Workspace, messages: list[dict], anchor: str | None, quote: str, 
     style = {answer_styles.STE100: answer_styles.STE100_INSTRUCTIONS,
              answer_styles.XRAY: answer_styles.XRAY_INSTRUCTIONS}.get(answer_style) or (
              "用" + langs.reply_lang(ws.load("paper").get("meta")) + "，直接、具体，能举例就举例。\n")  # i18n-ok
+    # 网页来源只能通过提问文本调整回答详略；它不会改变网页模型的内部推理预算。
+    if engine == "chatgpt_web":
+        from .chat_options import web_depth_instruction
+        style += web_depth_instruction(answer_depth)
     whole = _paper_context(ws) if answer_style in answer_styles.WHOLE_PAPER else ""
-    return ("你在陪读者读一篇学术论文，回答他边读边冒出来的问题。\n" + style  # i18n-ok
+    # ChatGPT 网页的通用角色与公式要求已在“翻译”项目指令中设置；本轮只发回答风格和论文上下文。
+    shared = "" if engine == "chatgpt_web" else ("你在陪读者读一篇学术论文，回答他边读边冒出来的问题。\n"  # i18n-ok
             + "区分“论文里写了什么”和“你的补充解释”，论文里没有的内容不要说成是论文说的。"  # i18n-ok
             "行内公式只用 $TeX$，行间公式只用 $$TeX$$。"  # i18n-ok
             r"不要用 \(\) 或 \[\]，不要把公式放进反引号或代码块。"  # i18n-ok
             "行间公式的 $$ 单独占一行。公式内部可以换行，但不要在公式中插入空行；多行推导使用 aligned 环境。"  # i18n-ok
-            "保留完整的上下标、括号和单位。提到原文位置时说“式 5”“第 4 页那段”，不要写 [p4-5] 这类内部编号。只输出回答本身，不要客套，不要重复问题。\n" + tool + "\n"  # i18n-ok
+            "保留完整的上下标、括号和单位。提到原文位置时说“式 5”“第 4 页那段”，不要写 [p4-5] 这类内部编号。只输出回答本身，不要客套，不要重复问题。\n")  # i18n-ok
+    return (shared + style + tool + "\n"
             + _context(ws, anchor, quote, refs)
             + ("\n\n" + whole if whole else "")
             + ("\n\n" + marks if marks else "")
@@ -198,7 +204,11 @@ def stream(ecfg: dict, text: str, cwd: Path, cancel: threading.Event, on_model=N
     if bad:
         raise engines.EngineError(bad)
     try:
-        if e == "claude":
+        if e == "chatgpt_web":
+            from ..engines import chatgpt_web
+            yield from chatgpt_web.stream(ecfg["chatgpt_web"], text, cwd, cancel,
+                                          session=ecfg["chatgpt_web"].get("session") or str(cwd))
+        elif e == "claude":
             yield from _stream_claude(ecfg["claude"], text, cwd, cancel, on_model, meter)
         elif e == "openai":
             yield from openai_api.stream(ecfg["openai"], text, cancel, meter)

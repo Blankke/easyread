@@ -92,6 +92,8 @@ svg.i.sm { width: 15px; height: 15px; }
   border-bottom: 1px solid var(--rule);
 }
 .topbar .grow { flex: 1; min-width: 0; }
+/* .btn 的 display 会覆盖浏览器默认的 hidden 样式；普通浏览器须隐藏桌面专用入口。 */
+.topbar #chatgptBrowserBtn[hidden] { display: none; }
 .brand { display: inline-flex; align-items: center; gap: 9px; font: 650 17px/1 var(--ui); letter-spacing: -.01em; text-decoration: none; color: var(--ink); white-space: nowrap; }
 .brand .mark { width: 26px; height: 26px; flex: none; display: block; }
 .brand b { font-weight: 700; color: var(--accent); }

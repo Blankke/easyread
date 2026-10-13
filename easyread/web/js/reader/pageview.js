@@ -3,7 +3,7 @@
   "use strict";
   const S = PR.state;
   const body = document.body;
-  let pvPage = 1, pvBlock = null;
+  let pvPage = 1, pvBlock = null, pvZoom = 1;
   const pages = () => (S.paper.meta || {}).pages || [];
   const boxesOf = (loc) => loc.boxes && loc.boxes.length ? loc.boxes : [loc.box];
 
@@ -45,7 +45,7 @@
     if (!p) return "";
     const base = PR.imageUrl(p.img);
     if (PR.store.mode !== "server") return base;
-    const need = (PR.$(".pv-scroll").clientWidth || 480) * (devicePixelRatio || 1);
+    const need = (PR.$(".pv-scroll").clientWidth || 480) * pvZoom * (devicePixelRatio || 1);
     return need <= 1000 ? base + "?w=1000" : need <= 1600 ? base + "?w=1600" : base;  // 1000 宽的服务端已提前生成好
   }
   let pageNodes = [], pageSource = null;
@@ -93,10 +93,39 @@
     return node.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
   }
   let panelInput = false, programmaticUntil = 0;
-  ["wheel", "pointerdown", "touchstart", "keydown"].forEach(type => scroller.addEventListener(type, () => {
+  function claimPanelInput() {
     panelInput = true;
     holdUntil = Date.now() + 2000;
-  }, { passive: true }));
+  }
+  ["pointerdown", "touchstart", "keydown"].forEach(type => scroller.addEventListener(type, claimPanelInput, { passive: true }));
+  // Ctrl＋滚轮只改变原页宽度；必须关闭 passive，才能阻止浏览器缩放整个界面。
+  scroller.addEventListener("wheel", (e) => {
+    if (!e.ctrlKey) { claimPanelInput(); return; }
+    e.preventDefault();
+    e.stopPropagation();
+    if (!pageNodes.length || !e.deltaY) return;
+    // 将行、页单位统一为像素，并限制单次幅度，兼顾鼠标滚轮和触控板。
+    const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? scroller.clientHeight : 1);
+    const next = Math.max(0.5, Math.min(4, pvZoom * Math.exp(-Math.max(-100, Math.min(100, delta)) * 0.002)));
+    if (next === pvZoom) return;
+    const entry = pageNodes.find(p => p.node.getBoundingClientRect().bottom > e.clientY) || pageNodes[pageNodes.length - 1];
+    const before = entry.node.getBoundingClientRect();
+    const x = (e.clientX - before.left) / before.width;
+    const y = (e.clientY - before.top) / before.height;
+    // 缩放引起的滚动不反向带动译文，也不被译文的跟随逻辑拉回。
+    panelInput = false;
+    programmaticUntil = Date.now() + 1500;
+    holdUntil = Date.now() + 2000;
+    pvZoom = next;
+    scroller.style.setProperty("--pv-page-width", (pvZoom * 100) + "%");
+    const after = entry.node.getBoundingClientRect();
+    scroller.scrollTo({
+      left: scroller.scrollLeft + after.left + x * after.width - e.clientX,
+      top: scroller.scrollTop + after.top + y * after.height - e.clientY,
+      behavior: "instant",
+    });
+    loadNearby(pvPage);
+  }, { passive: false });
   scroller.addEventListener("scrollend", () => { programmaticUntil = 0; });
   // Switching back to the text must immediately return control to that pane.
   ["wheel", "pointerdown", "touchstart", "keydown"].forEach(type => document.addEventListener(type, (e) => {

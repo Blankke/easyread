@@ -32,7 +32,8 @@ async function reader(threads = [], options = {}) {
     state: {}, store: { mode: "server" }, pid: "test", token: "test-token", side: null,
     $: selector => nodes.get(selector) || null,
     on(name, fn) { events.set(name, fn); }, openSide(side) { this.side = side; }, readingBlock: () => null, blockById: {}, myNotes: () => [],
-    api: async () => ({ threads: structuredClone(threads), models: [{ id: "m", label: "Model" }, { id: "m2", label: "Other model" }], default: "m" }),
+    api: async () => ({ threads: structuredClone(threads), models: options.models || [{ id: "m", label: "Model" }, { id: "m2", label: "Other model" }],
+      default: options.default || "m" }),
     confirm: async opts => { confirmations.push(opts); return true; },
     nowIso: () => "2026-01-01T00:00:00Z", shortTime: () => "today", autosize() {},
     esc: text => String(text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"), icon: () => "", logo: () => "", md: text => text, mdBlocks: text => text,
@@ -336,4 +337,22 @@ test("thinking effort lives in the model menu and shows on the model button once
   await settled();
   assert.equal(r.requests[0].chat_options.reasoning_effort, "high");
   r.finish(); await sending;
+});
+
+test("ChatGPT 网页显示回答深度，并把选择送到问 AI 请求及应用内回答", async () => {
+  const r = await reader([], { models: [{ id: "web", label: "ChatGPT 网页", engine: "chatgpt_web", model: "6" }], default: "web" });
+  await r.click("menu");
+  assert.match(r.panel.innerHTML, /回答深度/);
+  assert.match(r.panel.innerHTML, /通过提问要求调整回答详略/);
+  const button = { dataset: { c: "effort-level", effort: "rigorous" },
+    closest: selector => selector === "[data-c]" ? button : selector === "#chatpanel" ? r.panel : null };
+  await r.dispatch("click", button);
+  assert.match(r.panel.innerHTML, /ch-model-effort"> · 严谨/);
+  r.nodes.get("#chatInput").value = "这段在说什么？";
+  const sending = r.click("send");
+  await settled();
+  assert.equal(r.requests[0].chat_options.answer_depth, "rigorous");
+  assert.equal(r.requests[0].chat_options.reasoning_effort, undefined);
+  r.finish(); await sending;
+  assert.match(r.panel.innerHTML, /误差为 2%/);
 });

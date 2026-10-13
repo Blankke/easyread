@@ -26,7 +26,7 @@ Runs locally. You choose the model service and whether to keep your library in a
 ## How it differs from "throw the PDF into a translator"
 
 - **Reads like a typeset book.** Serif body text, comfortable line length and spacing. Equations are re-rendered with KaTeX, tables become clean three-line tables, references stay in the original. One click in the top bar for dark mode.
-- **The original is always right there.** Toggle "bilingual" to show the English under each paragraph. Open the original page on the right: it follows your reading position and draws a box around the paragraph you're on.
+- **The original is always right there.** Toggle "bilingual" to show the English under each paragraph. Open the original page on the right: it follows your reading position and draws a box around the paragraph you're on. Hold `Ctrl` and scroll over the original pages to zoom the PDF (50%–400%) while keeping the window and panel width unchanged; scroll horizontally to explore enlarged pages.
 - **Translation and commentary are kept apart.** The main text is only the faithful translation. AI explanations and answers go in the margin, so you always know what the paper actually says.
 - **Ask AI while you read.** A chat panel with streaming answers. Quote several paragraphs at once (drag selected text into the input). Ask "how do the equations I highlighted in red relate?" and it finds your red highlights. Multiple chats, each with its own model: Claude, GPT (Codex), DeepSeek, Qwen, local Ollama… Pin a good answer to the margin in one click.
 - **Annotate.** Four highlighter colors or underline, notes, questions. Send a question to AI with one click, or ask it to comment on a note. All annotations are collected in reading order and can be exported to Markdown (Obsidian, Notion).
@@ -106,6 +106,38 @@ easyread
 
 Your browser opens `http://127.0.0.1:8765`. The server only listens on localhost.
 
+In the Electron desktop app, open Settings → Model → Open ChatGPT, sign in, and refresh the model list. Add a ChatGPT website model card and set it for translation or Ask AI. EasyRead automatically uploads the original PDF and current highlights and notes, sends prompts in the background, and receives answers and translated pages in the reader. Web tasks run in a dedicated hidden window. During a task, opening the pane shows a read-only live preview and the current stage; resizing or closing it and navigating EasyRead leave the execution page unchanged. When idle, the pane shows the interactive website for sign-in and conversation inspection. If sign-in or verification is needed, EasyRead asks you to open ChatGPT yourself. After completing it, close the website and retry. When opened manually, drag its left border to resize it, or drag the border to the right edge and release to close it; the top Close button also works while background tasks continue. Retrying the same batch first recovers a completed answer from its original web conversation. If page controls or delivery need attention, open the embedded website to check before retrying. This source requires the Electron desktop app.
+
+The first web task prepares the “翻译” project when needed, creating it and configuring shared instructions and project-only memory while preserving existing instructions. Successful configuration is saved per account and instruction version. Later batches reuse the paper conversation, including after restarting, without repeatedly opening project settings. An invalid project address or changed instruction version triggers setup again; use the `--setup-project` command below to explicitly recheck settings. Papers and Ask AI threads have separate project conversations. Project operations, model reads, and task submission run in sequence. Opening or closing the website changes its display state.
+
+The library and reader top bars both offer Open ChatGPT website. Website translation processes up to four pages per batch by default and uses smaller batches for dense pages; translation settings allow one to four pages. Website tasks run serially in the same conversation. Each completed answer is saved before it is parsed and merged into `paper.json`; missing pages are retried individually. After a restart, completed pages are skipped and a saved answer can be parsed again without sending the same batch twice.
+
+If a website answer uses single backslashes in TeX formulas, EasyRead repairs the JSON escaping while preserving the formulas. A response that still cannot be parsed is regenerated once for that batch; if it remains invalid, the original answer is kept for diagnosis and later batches continue.
+
+For a ChatGPT website model, the Ask AI model menu offers answer depth (Brief, Balanced, Detailed, Rigorous, Deep). EasyRead adds the chosen depth instruction to each question to guide detail and verification; ChatGPT controls its own internal reasoning effort. Once the website answer is complete and stable, it appears in the EasyRead chat panel and is saved in the conversation history.
+
+On Windows, sign in through the desktop app before verifying a real paper, then exit the desktop app so processes do not share its login cache. The paper check uploads the PDF, sends one test question, and reports the answer length and JSON validation result. The local background input check requires no account.
+
+```powershell
+# Run web integration regression tests without an account
+npm run test:web
+# Check the hidden viewport, input, submission, and long answer extraction
+node .\scripts\dev_desktop.cjs .\scripts\verify_web_background.cjs
+# Log stage timings to distinguish generation from local delivery
+$env:EASYREAD_WEB_TRACE="1"
+# Check paper upload, submission, and answer recovery
+node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs .\library\<paper-id>\source.pdf "model name"
+Remove-Item Env:EASYREAD_WEB_TRACE
+# Explicitly recheck project settings
+node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --setup-project
+# Run the production queue and save translated pages (omit pages to resume all remaining pages)
+. .\.venv\Scripts\Activate.ps1
+python -c "import sys; print(sys.executable)"
+node .\scripts\dev_desktop.cjs .\scripts\verify_web_translation.cjs <paper-id> 3-4 --monitor
+```
+
+For a native Windows window, start the app from PowerShell; a WSL launch opens the Linux build. The development launcher selects the Electron binary for the current system, so both binaries can coexist in one source directory. If Node cannot download Electron on Windows, run `.\scripts\install_electron_windows.ps1` in PowerShell to download and verify the official release. If `npm install` stops at the download, run `npm install --ignore-scripts` before the PowerShell installer. Install Python dependencies separately for each operating system. The native title bar supports Windows Snap and maximize. F11 toggles full screen; Ctrl++ and Ctrl+- adjust interface zoom, and Ctrl+0 restores the 115% default. Window size and zoom are restored on the next launch.
+
 ## Usage
 
 1. Open Settings (top right) → Model: add the models you want and choose "Use for translation" on one card. Models for translation and Ask AI are managed on the same page.
@@ -147,6 +179,8 @@ No frontend build step: `easyread/web/` is plain HTML/CSS/JS, just refresh after
 
 ```bash
 python -m unittest discover tests         # unit tests
+node --test tests/desktop/*.cjs           # desktop tests
+python scripts/i18n_check.py              # translation coverage
 node tests/e2e.cjs library/<paper-id>     # browser end-to-end test (needs Playwright and a translated paper)
 ```
 

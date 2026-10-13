@@ -63,6 +63,8 @@ def handle(handler, ws: Workspace, body: dict) -> None:
     if mode != "draft" and not note.strip():
         raise ValueError(tr("笔记还是空的"))
     ecfg, m = chat_models.engine_cfg(config.load(), body.get("model"))
+    if ecfg["engine"] == "chatgpt_web":
+        ecfg["chatgpt_web"]["session"] = f"{ws.id}/notehelp"
     text = prompt(ws, mode, note, ecfg["engine"])
     handler.send_response(200)
     handler.send_header("Content-Type", "application/x-ndjson; charset=utf-8")

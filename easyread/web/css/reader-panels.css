@@ -45,8 +45,9 @@ body.resizing .side-panel { transition: none; }
 .pv-label { min-width: 88px; text-align: center; font-variant-numeric: tabular-nums; }
 .pv-follow { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--ink-3); margin-right: 4px; cursor: pointer; }
 .pv-follow input { accent-color: var(--accent); margin: 0; }
-.pv-scroll { flex: 1; min-height: 0; overscroll-behavior: contain; overflow: auto; padding: 18px; background: color-mix(in srgb, var(--bg) 60%, var(--rule)); }
-.pv-page { position: relative; margin: 0 auto; width: 100%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.12), 0 6px 24px rgba(0,0,0,.08); }
+/* 缩放只作用于原页；关闭原生滚动锚定，由鼠标位置维持阅读落点。 */
+.pv-scroll { flex: 1; min-height: 0; overscroll-behavior: contain; overflow: auto; overflow-anchor: none; scrollbar-gutter: stable; padding: 18px; background: color-mix(in srgb, var(--bg) 60%, var(--rule)); }
+.pv-page { position: relative; margin: 0 auto; width: var(--pv-page-width, 100%); background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.12), 0 6px 24px rgba(0,0,0,.08); }
 .pv-page + .pv-page { margin-top: 18px; }
 .pv-page img { display: block; width: 100%; height: 100%; object-fit: contain; }
 :root[data-theme="dark"] .pv-page img { filter: invert(.9) hue-rotate(180deg) contrast(.9); }

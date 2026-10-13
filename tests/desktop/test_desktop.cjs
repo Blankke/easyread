@@ -5,7 +5,7 @@ const vm = require("node:vm");
 const { EventEmitter } = require("node:events");
 const { test } = require("node:test");
 
-async function desktop(platform = "darwin", lock = true, ready = true, argv = [], appDataBroken = false) {
+async function desktop(platform = "darwin", lock = true, ready = true, argv = [], appDataBroken = false, projectStarts = null) {
   const app = new EventEmitter();
   Object.assign(app, {
     setPath(name, value) { this.paths = { ...this.paths, [name]: value }; },
@@ -18,11 +18,16 @@ async function desktop(platform = "darwin", lock = true, ready = true, argv = []
   const windows = [], launches = [], menus = [], stages = [], handlers = new Map();
   const ipcMain = { handle(name, fn) { handlers.set(name, fn); } };
   class Window extends EventEmitter {
-    constructor() { super(); this.webContents = new EventEmitter(); this.webContents.setWindowOpenHandler = () => {}; this.webContents.mainFrame = { url: "http://127.0.0.1:9876/" }; windows.push(this); }
+    constructor(options) { super(); this.options = options; this.webContents = new EventEmitter(); this.webContents.setWindowOpenHandler = () => {};
+      this.webContents.setZoomFactor = factor => { this.webContents.zoomFactor = factor; };
+      this.webContents.getZoomFactor = () => this.webContents.zoomFactor;
+      this.webContents.mainFrame = { url: "http://127.0.0.1:9876/" }; windows.push(this); }
     static getAllWindows() { return windows.filter(w => !w.closed); }
     async loadURL(url) { this.url = url; }
     show() { this.shown = true; }
     focus() { this.focused = true; }
+    setFullScreen(value) { this.fullScreen = value; }
+    isFullScreen() { return !!this.fullScreen; }
     isMinimized() { return false; }
     close() { this.closed = true; this.emit("closed"); }
   }
@@ -43,7 +48,9 @@ async function desktop(platform = "darwin", lock = true, ready = true, argv = []
   };
   const proc = new EventEmitter();
   Object.assign(proc, { platform, env: {}, resourcesPath: "/tmp/Resources", argv: ["EasyRead.exe", ...argv] });
-  const fakeRequire = name => name === "electron" ? { app, BrowserWindow: Window, Menu, ipcMain, dialog: { showErrorBox() {}, showOpenDialog: async () => ({ canceled: false, filePaths: ["/tmp/chosen"] }) }, shell: {} }
+  const fakeRequire = name => name === "electron" ? { app, BrowserWindow: Window, Menu, ipcMain,
+    WebContentsView: projectStarts ? class {} : undefined,
+    dialog: { showErrorBox() {}, showOpenDialog: async () => ({ canceled: false, filePaths: ["/tmp/chosen"] }) }, shell: {} }
     : name === "child_process" ? childProcess : name === "fs" ? { existsSync: () => true }
     : name === "http" ? { request(url, options, callback) {
       const req = new EventEmitter(); req.setTimeout = () => {}; req.end = () => queueMicrotask(() => {
@@ -55,10 +62,16 @@ async function desktop(platform = "darwin", lock = true, ready = true, argv = []
     } }
     : name === "./startup-feedback.cjs" ? { ...require("../../electron/startup-feedback.cjs"), mark(_app, stage) { stages.push(stage); }, loginShellPath: async () => "/usr/bin:/bin" }
     : name === "./desktop-updates.cjs" ? { registerUpdates() {} }
+    : name === "./chatgpt-web.cjs" && projectStarts ? { createChatGPTWeb: () => ({
+      initializeProject: async () => { projectStarts.push("initialized"); return { ready: true }; },
+      status: async () => ({ ready: true }), models: async () => ({ models: [] }),
+      show() {}, hide() {}, clearPending() { return { ok: true }; }, execute: async () => {}, cancel() {},
+    }) }
     : name === "./deep-link.cjs" ? require("../../electron/deep-link.cjs")
     : name === "./data-dir.cjs" ? { prepare: async () => null }
     : name === "electron-updater" ? { autoUpdater: {} }
-    : name === "./window-state.cjs" ? { options: () => ({ opts: { width: 1440, height: 960 }, maximized: false }), track() {} }
+    : name === "./window-state.cjs" ? { options: () => ({ opts: { width: 1440, height: 960 }, maximized: false, zoomFactor: 1.15 }), track() {} }
+    : name === "./window-controls.cjs" ? require("../../electron/window-controls.cjs")
     : require(name);
   const source = fs.readFileSync(path.join(__dirname, "../../electron/main.cjs"), "utf8");
   vm.runInNewContext(source, { require: fakeRequire, process: proc, __dirname: "/tmp/electron", setTimeout, clearTimeout, console });
@@ -105,6 +118,33 @@ test("a second app instance exits before starting a backend", async () => {
 test("Windows retains its existing menu behavior", async () => {
   const d = await desktop("win32");
   assert.equal(d.app.menu, null);
+  assert.equal(d.windows[0].options.frame, true);
+  assert.equal(d.windows[0].options.minWidth, 640);
+  assert.equal(d.windows[0].webContents.zoomFactor, 1.15);
+  d.app.quit();
+});
+
+test("desktop zoom shortcuts persist through navigation and F11 toggles fullscreen", async () => {
+  const d = await desktop("win32");
+  const win = d.windows[0];
+  const input = (code, key, control = true) => {
+    const event = { prevented: false, preventDefault() { this.prevented = true; } };
+    win.webContents.emit("before-input-event", event, { type: "keyDown", code, key, control });
+    assert.equal(event.prevented, true);
+  };
+  input("Equal", "+");
+  assert.equal(win.webContents.zoomFactor, 1.25);
+  win.webContents.zoomFactor = 1;
+  win.webContents.emit("did-finish-load");
+  assert.equal(win.webContents.zoomFactor, 1.25);
+  input("Minus", "-");
+  assert.equal(win.webContents.zoomFactor, 1.15);
+  input("Digit0", "0");
+  assert.equal(win.webContents.zoomFactor, 1.15);
+  input("F11", "F11", false);
+  assert.equal(win.isFullScreen(), true);
+  input("F11", "F11", false);
+  assert.equal(win.isFullScreen(), false);
   d.app.quit();
 });
 
@@ -119,6 +159,16 @@ test("the startup window is visible while the backend is still starting", async 
   assert.equal(d.windows[0].url, "http://127.0.0.1:9876");
   assert.ok(d.stages.includes("library-loaded"));
   d.app.quit(); await d.settled();
+});
+
+test("桌面启动只接通任务桥，项目配置由任务按需执行", async () => {
+  const starts = [];
+  const d = await desktop("win32", true, true, [], false, starts);
+  await d.settled();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(d.windows[0].url, "http://127.0.0.1:9876");
+  assert.deepEqual(starts, [], "启动时不能反复导航到项目设置");
+  d.app.quit();
 });
 
 test("login shell discovery yields without blocking and tolerates shell errors", async () => {
@@ -142,6 +192,9 @@ test("cloud library IPC restricts folder picking and relaunch to the local main 
   assert.equal(await d.handlers.get("easyread:pick-folder")(event), "/tmp/chosen");
   await assert.rejects(d.handlers.get("easyread:pick-folder")({ sender: {}, senderFrame: sender.mainFrame }), /Untrusted/);
   await assert.rejects(d.handlers.get("easyread:pick-folder")({ sender, senderFrame: { url: "https://example.com" } }), /Untrusted/);
+  for (const name of ["web-status", "web-models", "web-open", "web-close", "web-clear-pending"]) {
+    await assert.rejects(d.handlers.get("easyread:" + name)({ sender: {}, senderFrame: sender.mainFrame }), /Untrusted/);
+  }
   await d.handlers.get("easyread:relaunch")(event);
   assert.equal(d.launches[0].child.killed, true);
   assert.equal(d.app.relaunched, true);

@@ -179,7 +179,9 @@ class Jobs:
         skip = set(tl.get("done_pages", [])) if read else set(tl.get("done_pages", [])) - set(tl.get("en_pages", []))
         planned = job.get("pages") is not None
         wanted = job["pages"] if planned else translate.scope_pages(ws, job.get("scope")) or all_pages
-        pages = wanted if planned and not job.get("cap_check") else [n for n in wanted if n not in skip]
+        # 网页批次完成时译文和 done_pages 已原子落盘；明确指定页码的续跑也要跳过这些页。
+        # 其他来源仍保留原有“指定页重新翻译”的行为，段落重译另有独立入口。
+        pages = wanted if planned and not job.get("cap_check") and cfg.get("engine") != "chatgpt_web" else [n for n in wanted if n not in skip]
         if not pages:
             self._write(ws, state="done", message=tr("选定范围已整理完") if read else tr("选定范围已译完"))
             return
@@ -209,7 +211,8 @@ class Jobs:
             failed = translate.translate_pages(ws, cfg, pages, cancel, report, meter, read)
         finally:  # 取消、出错也把已经花掉的记上
             run = meter.snapshot()
-            if run["calls"]:
+            # 网页来源没有可核实的 token 统计，快照只带 engine，不含 calls。
+            if run.get("calls"):
                 ws.update("job", lambda j: j.update(usage=run, usage_total=usage.merge(j.get("usage_total"), run)))
         minutes = max(1, round((time.time() - started) / 60))
         if failed:

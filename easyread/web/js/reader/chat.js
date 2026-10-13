@@ -158,9 +158,10 @@
       PR.esc(styleHint(st.answerStyle)) + '">' + styleLabel(st.answerStyle) + "</button>";
     const styleMenu = st.styleOpen ? '<div class="ch-menu">' + STYLES.map((s) => '<button data-c="style-pick" data-s="' + s + '" class="' + (s === st.answerStyle ? "on" : "") + '">' +
       "<b>" + styleLabel(s) + (s === st.answerStyle ? '<span class="ch-model-check">✓</span>' : "") + "</b><small>" + PR.esc(styleHint(s)) + "</small></button>").join("") + "</div>" : "";
+    const modelTitle = m.engine === "chatgpt_web" ? PR.t("换模型和回答深度") : PR.t("换模型和思考强度");
     return '<div class="ch-compose">' + (chips ? '<div class="ch-chips">' + chips + "</div>" : "") +
       '<textarea id="chatInput" rows="1" placeholder="' + PR.t("问点什么…") + '">' + PR.esc(st.draft) + "</textarea>" +
-      '<div class="ch-bar"><button class="ch-model" data-c="menu" title="' + PR.t("换模型和思考强度") + '"' + (st.streaming ? ' disabled' : '') + '>' + PR.esc(m.label) + PR.chatEffort.suffix(st, m) + PR.icon("chevron", "sm") + "</button>" + style + styleMenu + menu +
+      '<div class="ch-bar"><button class="ch-model" data-c="menu" title="' + modelTitle + '"' + (st.streaming ? ' disabled' : '') + '>' + PR.esc(m.label) + PR.chatEffort.suffix(st, m) + PR.icon("chevron", "sm") + "</button>" + style + styleMenu + menu +
       '<span class="grow"></span>' + PR.usageChip(st.limits, thread() && thread().messages, st.usageOpen) +
       (st.usageOpen ? PR.usagePop(st.limits, thread() && thread().messages) : "") + (st.streaming ? '<button class="ch-send stop" data-c="stop" title="' + PR.t("停止") + '">' + PR.icon("stop", "sm") + "</button>"
         : '<button class="ch-send" data-c="send" title="' + PR.t("发送（Enter）；换行用 Shift+Enter") + '">' + PR.icon("arrowUp", "sm") + "</button>") + "</div></div>";
@@ -211,6 +212,7 @@
     if (noteId) { PR.asking.add(noteId); PR.renderMargin(); }
     render();
     try {
+      if (modelOf(modelId).engine === "chatgpt_web" && PR.flushPending) await PR.flushPending();
       const res = await fetch("/api/p/" + PR.pid + "/chat", {
         method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json", "X-Token": PR.token || "" },
         body: JSON.stringify({ thread: t.local ? null : t.id, text, anchor: user.anchor, quote: user.quote, refs, note: noteId || null, model: modelId, answer_style: answerStyle, chat_options: chatOptions }),
@@ -272,13 +274,22 @@
       if (t) t.answer_style = st.answerStyle;
       return render();
     }
-    if (c === "effort-level") { if (st.streaming) return; const m = modelOf(st.model); st.chatOptions.reasoning_effort = b.dataset.effort === PR.chatEffort.fallback(st, m) && !m.reasoning_effort ? "" : b.dataset.effort; return render(); }  // 菜单不关；点的就是默认档就不传，跟着 CLI
+    if (c === "effort-level") {
+      if (st.streaming) return;
+      const m = modelOf(st.model);
+      if (m.engine === "chatgpt_web") st.chatOptions = { answer_depth: b.dataset.effort };
+      else st.chatOptions.reasoning_effort = b.dataset.effort === PR.chatEffort.fallback(st, m) && !m.reasoning_effort ? "" : b.dataset.effort;
+      return render();  // 菜单保持打开；网页选项写进提问，CLI 选项仍传真实推理参数。
+    }
     if (c === "menu") { st.menuOpen = !st.menuOpen; st.listOpen = st.styleOpen = st.usageOpen = false; return render(); }
     if (c === "usage") { st.usageOpen = !st.usageOpen; st.listOpen = st.menuOpen = st.styleOpen = false; return render(); }
     if (c === "model") { if (st.streaming) return; st.chatOptions = {}; st.model = b.dataset.m; st.menuOpen = false; return render(); }
     if (c === "manage") { st.menuOpen = false; render(); return PR.openSettings("chat"); }
     if (c === "send") return send(PR.$("#chatInput").value);
-    if (c === "stop" && st.streaming) return st.streaming.ctrl.abort();
+    if (c === "stop" && st.streaming) {
+      if (modelOf(st.model).engine === "chatgpt_web") PR.api("/api/p/" + PR.pid + "/chat/cancel", { method: "POST", body: {} }).catch(() => {});
+      return st.streaming.ctrl.abort();
+    }
     if (c === "suggest") return send(b.textContent);
     if (c === "unref") { st.refs.splice(+b.dataset.i, 1); return render(); }
     if (c === "noauto") { st.noAuto = true; return render(); }

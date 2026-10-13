@@ -28,17 +28,21 @@ class EngineError(RuntimeError):
     pass
 
 
+class InvalidModelOutput(EngineError):
+    """模型已回答，但返回内容无法解析；同一批可以安全地重新生成。"""
+
+
 class Cancelled(RuntimeError):
     pass
 
 
 ENGINE_NAMES = {"claude": "Claude Code", "codex": "Codex CLI", **{k: v["name"] for k, v in agent_cli.SPECS.items()},
-                "openai": "API", "none": "不翻译"}  # i18n-ok 显示时用 engine_name()
+                "openai": "API", "chatgpt_web": "ChatGPT 网页", "none": "不翻译"}  # i18n-ok 显示时用 engine_name()
 CLI_ENGINES = ("claude", "codex", *agent_cli.ENGINES)  # 本机 CLI：起子进程、用已登录的订阅
 
 
 def engine_name(engine: str | None) -> str:
-    return tr("不翻译") if engine == "none" else ENGINE_NAMES.get(engine, engine or "")
+    return tr("不翻译") if engine == "none" else tr("ChatGPT 网页") if engine == "chatgpt_web" else ENGINE_NAMES.get(engine, engine or "")
 
 
 def run(cfg: dict, prompt: str, cwd: Path, images: list[Path] | None = None, cancel: threading.Event | None = None,
@@ -55,6 +59,9 @@ def run(cfg: dict, prompt: str, cwd: Path, images: list[Path] | None = None, can
 
 def _run(cfg: dict, prompt: str, cwd: Path, images: list[Path] | None, cancel: threading.Event | None, meter) -> str:
     engine = cfg.get("engine")
+    if engine == "chatgpt_web":
+        from . import chatgpt_web
+        return chatgpt_web.run(cfg.get("chatgpt_web") or {}, prompt, cwd, images, cancel)
     if engine == "claude":
         return run_claude(cfg["claude"], prompt, cwd, cancel, meter)
     if engine == "codex":
@@ -71,7 +78,7 @@ def image_mode(cfg: dict) -> str:
     engine = cfg.get("engine")
     if engine == "claude" or engine in agent_cli.ENGINES:
         return "claude"
-    if engine == "codex" or (engine == "openai" and cfg["openai"].get("vision")):
+    if engine in ("codex", "chatgpt_web") or (engine == "openai" and cfg["openai"].get("vision")):
         return "attached"
     return "text"
 
@@ -80,7 +87,7 @@ def who(cfg: dict) -> str:
     engine = cfg.get("engine")
     if engine == "openai":
         return cfg["openai"].get("model") or "API"
-    return engine if engine in CLI_ENGINES else ""
+    return (cfg.get("chatgpt_web") or {}).get("model", "") if engine == "chatgpt_web" else engine if engine in CLI_ENGINES else ""
 
 
 # ---------- 本机 CLI ----------
@@ -256,6 +263,48 @@ def run_openai(c: dict, prompt: str, images: list[Path], cancel=None, meter=None
     return openai_api.complete(c, prompt, images, cancel, meter)
 
 
+_TEX_COMMANDS = frozenset({"begin", "bar", "beta", "frac", "nabla", "nu", "operatorname", "overline",
+                           "right", "rm", "sqrt", "text", "times", "top", "underbrace"})
+_TEX_COMMAND_PATTERN = re.compile(r"[A-Za-z]+")
+
+
+def _repair_json_escapes(body: str) -> str:
+    """只修 JSON 字符串内的反斜杠，防止 TeX 命令被当成 JSON 的换行或制表符。"""
+    out = []
+    inside = math = tex = False
+    i = 0
+    while i < len(body):
+        char = body[i]
+        if not inside:
+            if char == '"':
+                inside = True
+                tex = bool(re.search(r'"tex"\s*:\s*$', body[max(0, i - 80):i]))
+                math = False
+        elif char == '"':
+            inside = math = tex = False
+        elif char == "$":
+            # $$ 是一个行间公式边界，不能连续翻转两次。
+            pair = body.startswith("$$", i)
+            math = not math
+            out.append("$$" if pair else "$")
+            i += 2 if pair else 1
+            continue
+        elif char == "\\":
+            nxt = body[i + 1] if i + 1 < len(body) else ""
+            if nxt in ('"', "\\"):
+                out.extend((char, nxt))
+                i += 2
+                continue
+            command = _TEX_COMMAND_PATTERN.match(body, i + 1)
+            tex_command = bool(command and command.group() in _TEX_COMMANDS)
+            unicode_escape = nxt == "u" and bool(re.fullmatch(r"[0-9a-fA-F]{4}", body[i + 2:i + 6]))
+            if ((math or tex or tex_command) and not unicode_escape) or not (nxt in "/bfnrt" or unicode_escape):
+                out.append("\\")
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
 def parse_json(text: str):
     """从模型输出里取出 JSON（容忍 ```json 围栏和前后废话）。"""
     t = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()  # 推理模型（deepseek-r1、qwen3）先输出的思考过程
@@ -264,22 +313,20 @@ def parse_json(text: str):
     for s in (t, *(m.group(1).strip() for m in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", t))):
         start = min([i for i in (s.find("{"), s.find("[")) if i >= 0], default=-1)
         if start >= 0:
-            bodies.append(s[start:max(s.rfind("}"), s.rfind("]")) + 1])
+            end = max(s.rfind("}"), s.rfind("]"))
+            bodies.append(s[start:end + 1] if end >= start else s[start:])
     if not bodies:
-        raise EngineError(tr("模型输出里没有 JSON：{out}", out=text[:200]))
+        raise InvalidModelOutput(tr("模型输出里没有 JSON：{out}", out=text[:200]))
     first = None
     for body in bodies:
-        try:
-            return json.loads(body)
-        except json.JSONDecodeError as e:
-            first = first or e
-    body = bodies[0]
-    # 常见毛病：TeX 反斜杠没写成两个（\alpha、\sum）、字符串里有原样换行
-    fixed = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", body)
-    try:
-        return json.loads(fixed, strict=False)
-    except json.JSONDecodeError:
-        raise EngineError(tr("模型输出的 JSON 格式有错（{err}），会自动重试", err=first))
+        fixed = _repair_json_escapes(body)
+        # 优先解析公式转义修复后的内容；若它仍不合法，再试原文。
+        for candidate in (fixed, body) if fixed != body else (body,):
+            try:
+                return json.loads(candidate, strict=False)
+            except json.JSONDecodeError as e:
+                first = first or e
+    raise InvalidModelOutput(tr("模型输出的 JSON 格式有错（{err}）", err=first))
 
 
 def _version(exe: str) -> str:
@@ -293,6 +340,10 @@ def _version(exe: str) -> str:
 def test(cfg: dict) -> dict:
     """设置页“测试”按钮：真的让模型回一句，确认引擎能用。"""
     engine = cfg.get("engine")
+    if engine == "chatgpt_web":
+        from . import chatgpt_web
+        if not chatgpt_web.available():
+            return {"ok": False, "message": tr("ChatGPT 网页未连接，请在桌面版登录")}
     if engine in CLI_ENGINES:
         exe = cli_path(engine, cfg[engine])
         if not exe:

@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from easyread.server.jobs import Jobs
 from easyread.library.library import Library
+from easyread.library.paperdata import merge_blocks
 from easyread.library.store import Workspace, write_json_atomic
 
 
@@ -57,6 +58,45 @@ class JobsTest(unittest.TestCase):
             self.drain()
         self.assertEqual(self.ws.load("job")["state"], "done")
         self.assertNotIn(self.ws.id, self.jobs.cancels)
+
+    def test_web_translation_finishes_without_token_call_count(self):
+        self.jobs.enqueue(self.ws, pages=[1])
+        def translated(ws, cfg, pages, cancel, report, meter, read):
+            report(1, 1, "已译完")
+            return {}
+        with patch("easyread.server.jobs.config.load", return_value={"engine": "chatgpt_web", "chatgpt_web": {"model": "GPT"}}), \
+                patch("easyread.server.jobs.translate.translate_pages", side_effect=translated):
+            self.drain()
+        job = self.ws.load("job")
+        self.assertEqual(job["state"], "done")
+        self.assertEqual(job["usage"], {"engine": "chatgpt_web"})
+        self.assertNotIn("calls", job["usage"])
+
+    def test_web_explicit_pages_resume_skips_completed_translation(self):
+        write_json_atomic(self.ws.paper_path, {"meta": {"pages": [{"n": 1}, {"n": 2}], "page_count": 2},
+                                               "translation": {"done_pages": [1], "en_pages": []}})
+        self.jobs.enqueue(self.ws, pages=[1, 2])
+        translated_pages = []
+
+        def translated(ws, cfg, pages, cancel, report, meter, read):
+            translated_pages.extend(pages)
+            merge_blocks(ws, {"blocks": [{"id": "p2", "type": "para", "page": 2, "en": "Source", "zh": "译文"}]},
+                         done=pages, replace_pages=pages)
+            return {}
+
+        with patch("easyread.server.jobs.config.load", return_value={"engine": "chatgpt_web", "chatgpt_web": {"model": "GPT"}}), \
+                patch("easyread.server.jobs.translate.translate_pages", side_effect=translated):
+            self.drain()
+        self.assertEqual(translated_pages, [2])
+        self.assertEqual(self.ws.load("job")["state"], "done")
+        self.assertEqual(self.ws.load("paper")["translation"]["done_pages"], [1, 2])
+
+        # 同一指定范围再次提交时，已落盘页不会触发新的网页请求。
+        self.jobs.enqueue(self.ws, pages=[1, 2])
+        with patch("easyread.server.jobs.config.load", return_value={"engine": "chatgpt_web", "chatgpt_web": {"model": "GPT"}}), \
+                patch("easyread.server.jobs.translate.translate_pages") as translate_again:
+            self.drain()
+        translate_again.assert_not_called()
 
     def test_cancel_during_preparation_is_not_reported_done(self):
         write_json_atomic(self.ws.paper_path, {"meta": {}})

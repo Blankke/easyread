@@ -211,6 +211,30 @@ class AnswerStyleTest(unittest.TestCase):
                 sent = stream.call_args.args[1]
                 self.assertEqual("当前已导入的正文" in sent, style in answer_styles.WHOLE_PAPER)
 
+    def test_web_answer_depth_round_trips_to_prompt_and_saved_reply(self):
+        self.start_server()
+        engine = {"engine": "chatgpt_web", "chatgpt_web": {"model": "6"}}
+        model = {"id": "web", "name": "ChatGPT 网页", "engine": "chatgpt_web", "model": "6"}
+        with patch("easyread.server.server.config.load", return_value={}), \
+                patch("easyread.server.server.chat_models.engine_cfg", return_value=(engine, model)), \
+                patch("easyread.server.server.chat.stream", side_effect=lambda *a: iter([ANSWER[:20], ANSWER[20:]])) as stream:
+            events = self.post({"text": "这段在说什么？", "anchor": "b", "model": "web",
+                                "chat_options": {"answer_depth": "rigorous", "reasoning_effort": "high"}})
+            tid = events[0]["thread"]
+            self.assertEqual("".join(event.get("t", "") for event in events), ANSWER)
+            self.assertTrue(events[-1]["done"])
+            self.assertIn("本轮回答深度要求：", stream.call_args.args[1])
+            self.assertIn("核对相关原文、公式、数值和前提", stream.call_args.args[1])
+            self.assertEqual(stream.call_args.args[0]["chatgpt_web"]["session"], f"{self.ws.id}/chat/{tid}")
+            saved = chat_store.get(self.ws, tid)
+            self.assertEqual(saved["messages"][-1]["content"], ANSWER)
+            self.assertEqual(saved["messages"][-2]["chat_options"], {"answer_depth": "rigorous"})
+
+            followup = self.post({"thread": tid, "text": "能举个例子吗？", "model": "web",
+                                  "chat_options": {"answer_depth": "brief"}})
+            self.assertEqual(followup[0]["thread"], tid)
+            self.assertIn("回答简短", stream.call_args.args[1])
+
     def test_invalid_mode_is_http_400_before_any_model_call(self):
         self.start_server()
         for value in ("unknown", "", ["ste100"], {"style": "ste100"}):

@@ -18,6 +18,14 @@
     Object.assign(st, { tab: typeof tab === "string" && tab !== "engine" ? tab : "chat", cfg: d.config, presets: d.presets, groups: d.groups || [], chat,
       fetchMsg: null, apiTyping: false, advOpen: false, ui: { features: Object.assign({}, PR.features), keys_on: PR.keysOn, keys: Object.assign({}, PR.keymap) },
       theme: PR.ls.get("easyread-prefs", {}).theme || "auto", recording: null, editing: null, form: null, chatKeys: null, type: null, transChecked: false, pinned: false });
+    if (window.easyreadDesktop && window.easyreadDesktop.chatgptStatus) {
+      st.webStatus = await window.easyreadDesktop.chatgptStatus().catch((e) => ({ ready: false, error: e.message }));
+      st.webModels = null; st.webModelsError = "";
+      if (st.webStatus.ready) {
+        try { st.webModels = await window.easyreadDesktop.chatgptModels(); }
+        catch (e) { st.webModelsError = e.message; }
+      }
+    }
     render();
     dlg().classList.add("open");
     // 每次打开都问一次（后端有缓存，很快）：刚装好或更新了 Claude Code / Codex，版本号和模型名单马上跟上
@@ -141,6 +149,7 @@
     collect(state) {
       const c = state.cfg, o = c.openai;
       return { engine: c.engine, batch_pages: c.batch_pages, concurrency: c.concurrency, page_cap: c.page_cap, auto_translate: c.auto_translate,
+        chatgpt_web: { model: (c.chatgpt_web || {}).model || "", batch_pages: (c.chatgpt_web || {}).batch_pages || 4 },
         claude: { model: c.claude.model, command: c.claude.command, reasoning_effort: c.claude.reasoning_effort || "" },
         codex: { model: c.codex.model, command: c.codex.command, reasoning_effort: c.codex.reasoning_effort || "", service_tier: c.codex.service_tier || "" },
         ...Object.fromEntries(Object.keys(PR.agentClis).filter((k) => c[k]).map((k) => [k, { model: c[k].model || "", command: c[k].command || "", reasoning_effort: c[k].reasoning_effort || "" }])),

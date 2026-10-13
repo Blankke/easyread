@@ -109,6 +109,8 @@ class Handler(BaseHTTPRequestHandler):
         options = chat_options.apply(ecfg, body.get("chat_options"))
         model = chat_models.label(m)
         tid = thread["id"] if thread else chat_store.new_id()
+        if ecfg["engine"] == "chatgpt_web":
+            ecfg["chatgpt_web"]["session"] = f"{ws.id}/chat/{tid}"
         refs = [{"anchor": str(r.get("anchor") or ""), "quote": str(r.get("quote") or "")[:1000]}
                 for r in (body.get("refs") or [])[:12] if isinstance(r, dict) and r.get("anchor")]
         first = refs[0] if refs else {}
@@ -116,7 +118,8 @@ class Handler(BaseHTTPRequestHandler):
                 "note": body.get("note"), "refs": refs, "answer_style": style, "chat_options": options}
         past = (thread or {}).get("messages", [])
         convo = [{"role": x["role"], "content": x["content"]} for x in past] + [{"role": "user", "content": text}]
-        prompt_text = chat.prompt(ws, convo, user["anchor"], user["quote"], ecfg["engine"], refs, answer_style=style)
+        prompt_text = chat.prompt(ws, convo, user["anchor"], user["quote"], ecfg["engine"], refs,
+                                  answer_style=style, answer_depth=options.get("answer_depth", "balanced"))
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -139,6 +142,8 @@ class Handler(BaseHTTPRequestHandler):
             for piece in chat.stream(ecfg, prompt_text, ws.root, cancel, seen, meter):
                 pieces.append(piece)
                 send({"t": piece})
+            if not ws.root.exists():
+                raise engines.Cancelled()
             msg = chat_store.append(ws, tid, user, "".join(pieces), m["id"], model, meter.snapshot())
             send({"done": True, "id": msg["id"], "usage": msg.get("usage")})
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -177,6 +182,12 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
+        bridge_path = urlparse(self.path).path
+        if bridge_path in ("/api/desktop/web/next", "/api/desktop/web/heartbeat"):
+            from ..engines import chatgpt_web
+            if not chatgpt_web.SECRET or self.headers.get("X-Desktop-Bridge") != chatgpt_web.SECRET or self.headers.get("Origin"):
+                return self._json(403, {"error": "bad bridge secret"})
+            return self._json(200, chatgpt_web.next_task() if bridge_path.endswith("/next") else chatgpt_web.heartbeat())
         try:
             with self.app.location.request(self.command, self.path):
                 self._get()
@@ -295,6 +306,11 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- POST ----------
     def do_POST(self):
+        if urlparse(self.path).path == "/api/desktop/web/event":
+            from ..engines import chatgpt_web
+            if not chatgpt_web.SECRET or self.headers.get("X-Desktop-Bridge") != chatgpt_web.SECRET or self.headers.get("Origin"):
+                return self._json(403, {"error": "bad bridge secret"})
+            return self._json(200, chatgpt_web.event(json.loads(self._body() or b"{}")))
         if self.headers.get("X-Token") != self.app.token:  # 挡住别的网页跨站写
             return self._json(403, {"error": "bad token"})
         try:

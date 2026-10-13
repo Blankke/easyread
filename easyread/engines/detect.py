@@ -70,6 +70,9 @@ def needs_key(o: dict) -> bool:
 def ready(cfg: dict, found: dict) -> bool:
     """当前选的引擎看起来能用吗（首次引导据此提示）。"""
     e = cfg.get("engine")
+    if e == "chatgpt_web":
+        from . import chatgpt_web
+        return chatgpt_web.available()
     if e in engines.CLI_ENGINES:
         return bool(found.get(e, {}).get("found"))
     if e == "openai":

@@ -22,7 +22,7 @@
 ## 它和“把 PDF 丢给翻译软件”有什么不一样
 
 - **像读一本排好版的中文书。** 宋体正文、舒服的行宽和行距，公式用 KaTeX 按原文重排，表格是三线表，参考文献保留原文。顶栏一键切深色。
-- **随时核对原文。** 一键切“对照”，每段下面附英文；右侧可以开原页，跟着阅读位置翻页，还会框出当前段落在原页的位置。
+- **随时核对原文。** 一键切“对照”，每段下面附英文；右侧可以开原页，跟着阅读位置翻页，还会框出当前段落在原页的位置。鼠标放在原页区域，按住 `Ctrl` 滚动滚轮可缩放 PDF（50%–400%），窗口和面板宽度保持不变；放大后可横向滚动查看。
 - **翻译和解释分开。** 正文只放忠实的译文；AI 的解释、回答放在页边，一眼就能分清哪句是论文说的。
 - **边读边问 AI。** 右侧“问 AI”面板实时对话，回答逐字流出来；可以一次引用好几段（选中文字拖进输入框就行）。问“我标红的那些公式有什么联系”，它会按颜色找出你的划线。可以开多个对话，模型单独选：Claude、GPT（Codex）、DeepSeek、通义、本机 Ollama……好的回答一键放到页边。
 - **ASD-STE100 问答。** 在“问 AI”的“回答方式”里选择这个模式，用简明中文回答问题或总结论文，保留专业术语、公式和数值。模式按对话保存，支持复制、放到页边和导出 Markdown。[ASD-STE100](https://www.asd-ste100.org/STE_faq.html) 是英文标准；这个模式借鉴其短句、主动表达和术语一致等原则，提供中文写作辅助，不将中文答案标为符合英文标准或已认证。正文过长时只提供节选，回答需说明依据范围。
@@ -118,9 +118,16 @@ easyread
 
 ```bash
 npm install
-python -m pip install pyinstaller
+python -m venv .venv
+source .venv/bin/activate
+which python
+python -m pip install -e . pyinstaller
 npm run dev
 ```
+
+Windows PowerShell 中激活环境用 `.\.venv\Scripts\Activate.ps1`，确认解释器用 `where.exe python`。运行 `npm run dist` 前也要激活同一环境；该命令调用 `scripts/build_backend.py` 构建后端，再打包桌面安装程序。
+
+在 Windows 上使用时，请从 PowerShell 启动；WSL 中运行 `npm run dev` 打开的是 Linux 窗口。开发启动脚本会按系统选择 Electron 程序，同一源码目录可分别保存 Windows 和 Linux 程序。若 Windows 的 Node 无法下载 Electron，在 PowerShell 运行 `.\scripts\install_electron_windows.ps1`，它会下载官方压缩包、校验 SHA-256 并安装到独立目录；若 `npm install` 因下载步骤中断，先用 `npm install --ignore-scripts` 安装依赖，再运行该脚本。Python 虚拟环境仍应按系统分别安装。Windows 原生标题栏支持系统贴靠与最大化；`F11` 切换全屏，`Ctrl++` / `Ctrl+-` 缩放界面，`Ctrl+0` 恢复默认的 115%。窗口尺寸和缩放在下次启动时恢复。
 
 生成可分发安装包：
 
@@ -129,6 +136,36 @@ npm run dist
 ```
 
 输出在 `dist/electron/`：Windows 为 NSIS 安装程序，macOS 为 DMG（另有一个给应用内更新用的 zip），Linux 为 AppImage。macOS 包由 `scripts/mac_sign.cjs` 用固定的自签名证书签名，证书从环境变量 `MAC_SIGN_P12`、`MAC_SIGN_P12_PASSWORD` 读（发版时来自仓库 Secrets）；本机没设时退回临时签名，这样打出的包不能应用内更新。推送 `v*` 标签后，GitHub Actions 会在三个系统上构建，并把这些安装包自动附加到 GitHub Release；源码 zip 仍会由 GitHub 保留。打包后的文献库和设置：Windows 存在安装目录下的 `data`（安装目录写不进去时退回 `~/EasyRead`），macOS、Linux 存在 `~/EasyRead`。
+
+桌面版可在“设置 → 模型”中打开 ChatGPT 网页，登录并刷新账号可用的模型列表，然后添加“ChatGPT 网页”模型卡片并设为翻译或问 AI 默认。使用该来源时，EasyRead 会在后台自动上传原始 PDF、最新划线和笔记，发送问题并收取回答；翻译按批次自动回写阅读区。网页任务在独立的隐藏窗口中执行。任务期间手动打开侧栏，会显示只读的实时画面和当前阶段；调整宽度、关闭侧栏及切换 EasyRead 页面均不改变执行页面。空闲时侧栏显示可交互网页，用于登录和核对会话。需要登录或验证时，EasyRead 会提示你主动打开 ChatGPT；完成后可关闭网页并重试。手动打开的网页可拖动左侧边框调节宽度，拖到窗口右边缘松开即可关闭，也可以点顶部“关闭”，后台任务会继续执行。同一批次重试会先从原网页会话回收已经完成的回答，避免重复发送。网页控件变化或发送状态不明时，可主动打开内置网页核对后再重试。普通浏览器打开的 EasyRead 页面不支持这一来源。
+
+首条网页任务会在当前登录账号中按需准备“翻译”项目；项目不存在则自动创建，并补齐通用指令和“仅限项目”记忆设置，保留原有指令。成功配置按账号和指令版本保存，后续批次直接复用论文会话，重启后也无需反复打开项目设置。项目地址失效或指令版本变化时会重新准备；需要主动核对设置时，可运行下方的 `--setup-project` 验证命令。每篇论文和每个问 AI 对话各用自己的项目会话。项目操作、模型读取与翻译发送按顺序执行；打开或收起网页只改变显示状态。
+
+文献库和阅读页的顶栏都有“打开 ChatGPT 网页”。网页翻译默认每批最多 4 页，正文较长时会自动拆小；可在翻译设置中调整为 1–4 页。网页任务在同一会话中串行执行。每批回答先保存在论文目录，再解析并把已译页写入 `paper.json`；漏掉的页只单独补译。重启或续译时会跳过已完成页，并从本地回答继续处理尚未落成译文的批次。
+
+网页回答若把公式的 TeX 反斜杠写成单个，EasyRead 会在解析 JSON 时修复并保留公式内容。确实无法解析的回答会让当前批次重新生成一次；仍失败时只标记该批次，保留原始回答供排查，并继续后续页。
+
+在“问 AI”中选 ChatGPT 网页模型时，模型菜单提供“回答深度”（简短、适中、详细、严谨、深入）。该选项会写入本轮提问，控制回答的详略和核对要求；网页模型实际使用的内部思考强度仍由 ChatGPT 决定。网页回答完成并通过稳定性核验后，会显示在 EasyRead 对话面板并保存到对话记录。
+
+Windows 上可用以下命令复验后台链路。真实论文验证前先在桌面版登录，执行时请退出已有桌面进程，避免两个进程共用登录缓存。论文验证会上传 PDF 并发送一次测试提问，输出回答长度与 JSON 校验结果；本地后台输入验证无需账号。
+
+```powershell
+# 无需账号的网页链路回归测试
+npm run test:web
+# 验证隐藏窗口的视口、输入、发送与长回答提取
+node .\scripts\dev_desktop.cjs .\scripts\verify_web_background.cjs
+# 开启阶段耗时，区分网页生成等待和本地回传耗时
+$env:EASYREAD_WEB_TRACE="1"
+# 验证真实论文上传、发送和回答回收
+node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs .\library\<论文ID>\source.pdf "模型名"
+Remove-Item Env:EASYREAD_WEB_TRACE
+# 按需重新核对项目设置
+node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --setup-project
+# 验证正式翻译队列并写回指定论文（会实际翻译指定页，省略页码则续译剩余页）
+. .\.venv\Scripts\Activate.ps1
+python -c "import sys; print(sys.executable)"
+node .\scripts\dev_desktop.cjs .\scripts\verify_web_translation.cjs <论文ID> 3-4 --monitor
+```
 
 ## 怎么用
 
@@ -177,6 +214,8 @@ easyread export ID                     # 导出单文件离线 HTML
 
 ```bash
 python -m unittest discover tests         # 翻译调度等单元测试
+node --test tests/desktop/*.cjs           # 桌面端测试
+python scripts/i18n_check.py              # 国际化检查
 node tests/e2e.cjs library/<论文ID>       # 浏览器端到端测试（需要 Playwright 和一篇已译好的论文）
 ```
 

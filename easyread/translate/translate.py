@@ -21,6 +21,7 @@ from ..library.store import Workspace
 from .translator_checks import journal, save_checks as _save_checks
 
 _merge_lock = threading.Lock()  # 并发翻译时，并入 paper.json 和重算原页定位一次只做一个
+_WEB_MAX_SOURCE_CHARS = 12000  # 给双语 JSON 留输出空间；超长单页仍作为独立批次
 # 用量到顶、余额不足这类错误，后面的批次也一定失败：直接停，剩下的页记为没译，等额度恢复后一键重试
 _QUOTA = re.compile(r"session limit|usage limit|rate limit reached|insufficient_quota|余额不足|额度|接口返回 40[12]|insufficient balance|API returned 40[12]", re.I)  # i18n-ok
 _REF_LINE = re.compile(r"^\s*(\d+\.?\s*)?(references|bibliography|参考文献)\s*$", re.I | re.M)  # i18n-ok
@@ -87,6 +88,8 @@ def _normalize(data: dict, pages: list[int], taken: set[str]) -> dict:
     """补页码、去掉和已有块撞车的 id、丢掉明显无效的块。"""
     if isinstance(data, list):
         data = {"blocks": data}
+    if not isinstance(data, dict) or not isinstance(data.get("blocks") or [], list):
+        raise engines.InvalidModelOutput(tr("模型输出的块列表格式不对"))
     blocks = []
     for b in data.get("blocks") or []:
         if not isinstance(b, dict) or not b.get("type"):
@@ -121,6 +124,13 @@ def _problems(data: dict) -> list[str]:
     return problems + tex_problems(tex)
 
 
+def _discard_web_answer(ws: Workspace, cfg: dict, prompt: str, images=None) -> None:
+    """校验失败时清除网页回答快照，下次请求重新生成。"""
+    if cfg.get("engine") == "chatgpt_web":
+        from ..engines import chatgpt_web
+        chatgpt_web.discard(cfg["chatgpt_web"], prompt, ws.root, images)
+
+
 def _fill_batch(ws: Workspace, cfg: dict, batch: list[int], cancel, say, meter=None, wait=False) -> None:
     """只读原文整理过的页：不重排，只给已有的块补译文。漏译的键抛错，重试时只译剩下的。
     没有块的页（整页是上一段的续文）要等那段有了译文才算译完；wait：上一页还在别的段里译，先放着等全部译完再核对。"""
@@ -133,10 +143,16 @@ def _fill_batch(ws: Workspace, cfg: dict, batch: list[int], cancel, say, meter=N
             continuation.fill_empty(ws, empty, wait)
         return
     marked, ends = sentences.mark_items(blocks, items)  # 英文先按句插好 ‖，译文照着插，记句子对齐
-    text = engines.run(cfg, prompts_en.fill(ws, batch, marked), ws.root, None, cancel, meter)
-    data = engines.parse_json(text)
+    prompt = prompts_en.fill(ws, batch, marked)
+    text = engines.run(cfg, prompt, ws.root, None, cancel, meter)
+    try:
+        data = engines.parse_json(text)
+    except engines.EngineError:
+        _discard_web_answer(ws, cfg, prompt)
+        raise
     if not isinstance(data, dict) or not isinstance(data.get("zh"), dict):
-        raise engines.EngineError(tr("模型输出的格式不对（缺 zh）"))
+        _discard_web_answer(ws, cfg, prompt)
+        raise engines.InvalidModelOutput(tr("模型输出的格式不对（缺 zh）"))
     fake = [{"id": k, "type": "para", "zh": v} for k, v in data["zh"].items() if isinstance(v, str)]
     problems = _problems({"blocks": fake})
     if problems:
@@ -147,14 +163,19 @@ def _fill_batch(ws: Workspace, cfg: dict, batch: list[int], cancel, say, meter=N
                 data = fixed
         except engines.EngineError as e:
             journal(ws, tr("第 {pages} 页修正失败，保留原译：{err}", pages=batch, err=e))
+    if cancel.is_set() or not ws.root.exists():
+        raise engines.Cancelled()
     with _merge_lock:
+        if cancel.is_set() or not ws.root.exists():
+            raise engines.Cancelled()
         _unify_terms(ws, data, batch, {k: v if isinstance(v, str) else json.dumps(v, ensure_ascii=False) for k, v in items.items()})
         missing = fill_zh(ws, data, [n for n in batch if n not in empty], set(items), sentences.unmark_fill(data["zh"], ends))
         _save_checks(ws, data.get("checks"), batch)
         if not missing:
             continuation.fill_empty(ws, empty, wait)
     if missing:
-        raise engines.EngineError(tr("漏译了 {n} 处（{ids}）", n=len(missing), ids=", ".join(missing[:5])))
+        _discard_web_answer(ws, cfg, prompt)
+        raise engines.InvalidModelOutput(tr("漏译了 {n} 处（{ids}）", n=len(missing), ids=", ".join(missing[:5])))
 
 
 def _one_batch(ws: Workspace, cfg: dict, batch: list[int], total_pages: int, cancel, say, meter=None, read=False,
@@ -176,8 +197,13 @@ def _one_batch(ws: Workspace, cfg: dict, batch: list[int], total_pages: int, can
         data = engines.parse_json(text)
     except engines.EngineError:
         (ws.root / "extract" / f"failed-{batch[0]:03d}.txt").write_text(text, encoding="utf-8")
+        _discard_web_answer(ws, cfg, prompt, images)
         raise
-    data = _normalize(data, batch, _taken(ws, batch))
+    try:
+        data = _normalize(data, batch, _taken(ws, batch))
+    except (ValueError, KeyError, TypeError, engines.InvalidModelOutput) as e:
+        _discard_web_answer(ws, cfg, prompt, images)
+        raise engines.InvalidModelOutput(tr("模型输出的块格式不对：{err}", err=e)) from e
     problems = _problems(data)
     if problems:  # 给一次修的机会
         say(tr("第 {page} 页起有 {n} 处公式或格式问题，正在让模型修正", page=batch[0], n=len(problems)))
@@ -188,12 +214,17 @@ def _one_batch(ws: Workspace, cfg: dict, batch: list[int], total_pages: int, can
                 data = fixed
         except engines.EngineError as e:
             journal(ws, tr("第 {pages} 页修正失败，保留原译：{err}", pages=batch, err=e))
+    if cancel.is_set() or not ws.root.exists():
+        raise engines.Cancelled()
     with _merge_lock:
+        if cancel.is_set() or not ws.root.exists():
+            raise engines.Cancelled()
         # 整页都是参考文献时只有 references，没有新块，也算译完；整批都是跨页续文、已经并进上一段时也不用重复输出
         if not data["blocks"] and not data.get("references") and not continuation.covered(ws, batch, read):
             if wait:
                 raise continuation.WaitPrev(batch, read, lambda: merge_blocks(ws, {"blocks": []}, done=batch, replace_pages=batch, en_only=read))
-            raise engines.EngineError(tr("模型没有整理出任何内容") if read else tr("模型没有译出任何内容"))
+            _discard_web_answer(ws, cfg, prompt, images)
+            raise engines.InvalidModelOutput(tr("模型没有整理出任何内容") if read else tr("模型没有译出任何内容"))
         data = _normalize(data, batch, _taken(ws, batch))  # 并发时别的批可能刚占用了同名 id
         missing = page_check.missing_pages(ws, batch, data)  # 有的页有内容、有的页整页漏了：漏的页不算译完
         keep = [n for n in batch if n not in missing]
@@ -236,14 +267,20 @@ def _unify_terms(ws: Workspace, data: dict, batch: list[int], en_of: dict | None
         journal(ws, tr("第 {page} 页起术语统一：{en} 的“{mine}”改成已有的“{old}”", page=batch[0], en=en, mine=mine, old=old))
 
 
-def _batches(pages: list[int], size: int, en_pages: set[int]) -> list[list[int]]:
-    """分批：只把连续的页放一批（续传时中间隔着已译的页，跨页续文对不上）；只读原文整理过的页（补译文）和要从头译的页不混在一批里。"""
+def _batches(pages: list[int], size: int, en_pages: set[int], lengths: dict[int, int] | None = None) -> list[list[int]]:
+    """只合并连续且处理方式相同的页；网页批次还限制抽取正文总长度。"""
     out: list[list[int]] = []
+    chars = 0
     for n in pages:
-        if out and n == out[-1][-1] + 1 and len(out[-1]) < size and (out[-1][0] in en_pages) == (n in en_pages):
+        length = (lengths or {}).get(n, 0)
+        if (out and n == out[-1][-1] + 1 and len(out[-1]) < size and
+                (out[-1][0] in en_pages) == (n in en_pages) and
+                (lengths is None or chars + length <= _WEB_MAX_SOURCE_CHARS)):
             out[-1].append(n)
+            chars += length
         else:
             out.append([n])
+            chars = length
     return out
 
 
@@ -254,10 +291,22 @@ def translate_pages(ws: Workspace, cfg: dict, pages: list[int], cancel, report, 
     paper = ws.load("paper")
     total_pages = paper.get("meta", {}).get("page_count") or 0
     en_pages = set() if read else set(paper.get("translation", {}).get("en_pages", []))
-    size = max(1, int(cfg.get("batch_pages") or 2))
+    # 网页引擎串行使用同一会话，允许一轮处理更多页，减少网页往返次数。
+    web = cfg.get("engine") == "chatgpt_web"
+    if web:
+        size = max(1, min(4, int((cfg.get("chatgpt_web") or {}).get("batch_pages") or 4)))
+    else:
+        size = max(1, int(cfg.get("batch_pages") or 2))
+    # 稠密页面即使不足四页，双语 JSON 也可能很长；按抽取正文长度限制网页批次。
+    lengths = None
+    if web:
+        lengths = {}
+        for n in pages:
+            source = ws.root / "extract" / f"page-{n:03d}.txt"
+            lengths[n] = len(source.read_text(encoding="utf-8")) if source.is_file() else 0
     # 分段并行：切成几段连续的页同时译，段内一批接一批（见 segments.py）
-    k = segments.workers(cfg.get("concurrency"), len(_batches(pages, size, en_pages)))
-    lanes = [_batches(seg, size, en_pages) for seg in segments.plan(pages, size, k, ws.root)]
+    k = 1 if web else segments.workers(cfg.get("concurrency"), len(_batches(pages, size, en_pages)))
+    lanes = [_batches(seg, size, en_pages, lengths) for seg in segments.plan(pages, size, k, ws.root)]
     batches = [b for lane in lanes for b in lane]
     verb = tr("正在整理原文") if read else tr("正在翻译")
     workers = max(1, len(lanes))
@@ -349,9 +398,13 @@ def translate_pages(ws: Workspace, cfg: dict, pages: list[int], cancel, report, 
                 log.warning("翻译失败 %s %s: %s", ws.id, todo, err[:300])
                 if cancel.is_set():
                     raise engines.Cancelled()
-                if _QUOTA.search(err) or netcheck.offline(err):
+                if cfg.get("engine") == "chatgpt_web" and isinstance(e, engines.InvalidModelOutput):
+                    # 回答已完成且格式无效时，可重新生成一次；第二次仍失败只记当前批，不连坐后续页。
+                    continue
+                if cfg.get("engine") == "chatgpt_web" or _QUOTA.search(err) or netcheck.offline(err):
                     state["quota"] = err[:300]
-                    journal(ws, tr("额度用完或连不上，停止翻译剩下的页"))
+                    if cfg.get("engine") != "chatgpt_web":
+                        journal(ws, tr("额度用完或连不上，停止翻译剩下的页"))
                     break
         with lock:
             state["active"].discard(tuple(batch))

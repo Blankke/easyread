@@ -8,7 +8,6 @@ from __future__ import annotations
 import threading
 import time
 
-from ..app import config
 from ..library.store import read_json, write_json_atomic
 
 
@@ -40,11 +39,15 @@ class Meter:
 
     def snapshot(self) -> dict:
         with self._lock:
+            if self.data["engine"] == "chatgpt_web":
+                return {"engine": "chatgpt_web"}  # 网页未提供可核实的 token 和额度。
             return dict(self.data)
 
 
 # ---------- 最近一次看到的订阅额度（全局，新对话也能显示） ----------
 def _limits_path():
+    # 配置模块会加载模型名单；延迟导入避免单独启动后台任务时形成循环依赖。
+    from ..app import config
     return config.library_dir() / ".limits.json" if config.temp_library() else config.HOME / "limits.json"
 
 
@@ -62,6 +65,8 @@ def latest() -> dict | None:
 
 def merge(total: dict | None, run: dict) -> dict:
     """把这次的用量加进这篇论文的累计（job.json 的 usage_total）。"""
+    if run.get("engine") == "chatgpt_web":
+        return {"engine": "chatgpt_web"}
     out = dict(total or {})
     for k in ("calls", "input", "cached", "output"):
         out[k] = int(out.get(k, 0)) + int(run.get(k, 0))

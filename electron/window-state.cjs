@@ -3,6 +3,7 @@
 const { app, screen } = require("electron");
 const fs = require("fs");
 const path = require("path");
+const DEFAULT_ZOOM = 1.15;
 
 const file = () => path.join(app.getPath("userData"), "window-state.json");
 
@@ -10,13 +11,15 @@ function load() {
   try {
     const s = JSON.parse(fs.readFileSync(file(), "utf8"));
     const b = s.bounds;
-    if (!b || !(b.width > 0 && b.height > 0)) return { maximized: true };
+    if (!b || !(b.width > 0 && b.height > 0)) return { maximized: true, zoomFactor: DEFAULT_ZOOM };
     // 窗口至少有一部分落在某块屏幕上才用记下的位置
     const area = screen.getDisplayMatching(b).workArea;
     const visible = b.x < area.x + area.width && b.x + b.width > area.x && b.y < area.y + area.height && b.y + b.height > area.y;
-    return { bounds: visible ? b : { width: b.width, height: b.height }, maximized: !!s.maximized };
+    const zoomFactor = Number(s.zoomFactor);
+    return { bounds: visible ? b : { width: b.width, height: b.height }, maximized: !!s.maximized,
+      zoomFactor: Number.isFinite(zoomFactor) && zoomFactor >= 0.75 && zoomFactor <= 2 ? zoomFactor : DEFAULT_ZOOM };
   } catch (_) {
-    return { maximized: true };  // 第一次打开
+    return { maximized: true, zoomFactor: DEFAULT_ZOOM };  // 第一次打开
   }
 }
 
@@ -27,15 +30,17 @@ function options() {
   return {
     opts: s.bounds ? s.bounds : { width: Math.min(1440, area.width), height: Math.min(960, area.height) },
     maximized: s.maximized,
+    zoomFactor: s.zoomFactor,
   };
 }
 
 function track(win) {
   const save = () => {
-    if (win.isDestroyed() || win.isMinimized() || win.isFullScreen()) return;
+    if (win.isDestroyed() || win.isMinimized()) return;
     try {
       // 最大化时记最大化之前的大小，取消最大化后能回到原来那样
-      fs.writeFileSync(file(), JSON.stringify({ bounds: win.getNormalBounds(), maximized: win.isMaximized() }));
+      fs.writeFileSync(file(), JSON.stringify({ bounds: win.getNormalBounds(), maximized: win.isMaximized(),
+        zoomFactor: win.webContents.getZoomFactor() }));
     } catch (_) {
       // 写不进去就算了，下次按默认打开
     }
@@ -43,4 +48,4 @@ function track(win) {
   win.on("close", save);
 }
 
-module.exports = { options, track };
+module.exports = { options, track, DEFAULT_ZOOM };

@@ -56,6 +56,7 @@ window.PR = window.PR || {};
 
   /* 翻译进度旁边的一句话：“已用 12.3 万 token · 5 小时额度用到 24%” */
   PR.usageShort = function (u) {
+    if (u && u.engine === "chatgpt_web") return PR.t("用量未知");
     if (!u || !u.calls) return "";
     const five = u.limits && u.limits.five_hour;
     return PR.t("已用 {n} token", { n: tokens(u.input + u.output) }) + (five && five.used != null ? " · " + PR.t("5 小时额度用到 {pct}", { pct: pct(five.used) }) : "");
@@ -63,6 +64,7 @@ window.PR = window.PR || {};
 
   /* 论文详情里的用量卡片：上次翻译、这篇累计、译完时的额度 */
   PR.usageCard = function (u, total) {
+    if (u && u.engine === "chatgpt_web") return '<div class="us-card"><div class="us-row"><span>' + PR.t("ChatGPT 网页") + '</span><b>' + PR.t("用量未知") + '</b></div></div>';
     if (!u || !u.calls) return "";
     return '<div class="us-card">' + PR.usageTokens(PR.t("上次翻译"), u) +
       (total && total.calls > u.calls ? PR.usageTokens(PR.t("这篇累计"), total) : "") +
@@ -81,6 +83,8 @@ window.PR = window.PR || {};
   /* 对话输入框底部的小圆环。latest：服务端记下的最近一次额度 {limits, at}，新对话也有；
      没用过 Claude 订阅时只写这个对话的 token 数 */
   PR.usageChip = function (latest, msgs, open) {
+    const last = (msgs || []).map((m) => m.usage).filter(Boolean).pop();
+    if (last && last.engine === "chatgpt_web") return '<button class="us-chip' + (open ? ' on' : '') + '" data-c="usage"><span>' + PR.t("用量未知") + '</span></button>';
     const five = latest && latest.limits && latest.limits.five_hour;
     const live = five && five.used != null && !(five.resets_at && five.resets_at * 1000 <= Date.now());
     const cls = "us-chip" + (open ? " on" : "");
@@ -112,6 +116,8 @@ window.PR = window.PR || {};
 
   /* 点圆环弹出的用量面板 */
   PR.usagePop = function (latest, msgs) {
+    const last = (msgs || []).map((m) => m.usage).filter(Boolean).pop();
+    if (last && last.engine === "chatgpt_web") return '<div class="us-pop"><div class="us-row"><span>' + PR.t("ChatGPT 网页") + '</span><em>' + PR.t("用量未知") + '</em></div></div>';
     const bars = latest && latest.limits ? PR.usageBars(latest.limits, PR.t("Claude 订阅用量")) : "";
     return '<div class="us-pop">' + contextHtml(msgs) + bars +
       (bars ? '<div class="us-foot">' + PR.t("整个账号共用，含其他用途 · 更新于 {ago}", { ago: ago(latest.at) }) + "</div>" : "") + "</div>";
