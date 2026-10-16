@@ -8,11 +8,19 @@ const path = require("node:path");
 const { EventEmitter } = require("node:events");
 const { createHash } = require("node:crypto");
 const { test } = require("node:test");
-const { createChatGPTWeb, modelMenu, composerSend, composerAttachments, promptMatches } = require("../../electron/chatgpt-web.cjs");
+const { runInNewContext } = require("node:vm");
+const { createChatGPTWeb, readAccountId, modelMenu, composerSend, composerReady, composerAttachments, promptMatches } = require("../../electron/chatgpt-web.cjs");
 const { INSTRUCTIONS, mergeInstructions, projectPage } = require("../../electron/chatgpt-project.cjs");
 
 // 模拟 Chromium Runtime，不依赖 Electron 等待整页资源加载的脚本入口。
-function installRuntime(wc) {
+function installRuntime(wc, readAccount = async () => 'account') {
+  wc.session ||= {};
+  wc.session.fetch = async (url, options) => {
+    assert.equal(url, 'https://chatgpt.com/api/auth/session');
+    assert.equal(options.credentials, 'include');
+    const id = await readAccount();
+    return { ok: true, status: 200, json: async () => id ? { user: { id } } : {} };
+  };
   const debug = wc.debugger ||= { isAttached: () => true, attach() {}, on() {} };
   debug.attach ||= () => {};
   const send = debug.sendCommand?.bind(debug);
@@ -31,6 +39,38 @@ class BackgroundWindow extends EventEmitter {
   destroy() { this.destroyed = true; }
 }
 
+test('登录核验使用账号会话，不依赖页面输入框或读取聊天正文', async () => {
+  const run = response => readAccountId({
+    fetch: async (url, options) => {
+      assert.equal(url, 'https://chatgpt.com/api/auth/session');
+      assert.equal(options.credentials, 'include');
+      assert.equal(options.cache, 'no-store');
+      assert.equal(options.redirect, 'error');
+      return response;
+    },
+  });
+  const ok = data => ({ ok: true, status: 200, json: async () => data });
+  assert.equal(await run(ok({ user: { id: 'account' }, accessToken: '不得返回的令牌' })), 'account',
+    '项目目录没有聊天输入框，仍应识别有效登录');
+  assert.equal(await run(ok({})), '', '空会话不能识别为已登录');
+  assert.equal(await run({ ok: false, status: 401 }), '');
+  await assert.rejects(run({ ok: false, status: 503 }), /HTTP 503/);
+  await assert.rejects(run({ ok: false, status: 403 }), /HTTP 403/);
+  await assert.rejects(run({ ok: true, json: async () => { throw new SyntaxError('HTML'); } }), /未返回有效数据/);
+  await assert.rejects(run(ok({ user: { name: '残缺的用户资料' } })), /未返回完整用户信息/);
+  await assert.rejects(run(ok(null)), /格式异常/);
+  await assert.rejects(readAccountId({ fetch: async () => { throw new TypeError('Failed to fetch\n堆栈'); } }),
+    { message: 'ChatGPT 账号接口连接失败：Failed to fetch' });
+});
+
+test('纯文字编辑区可用时无需附件入口，禁用输入框不能发送', () => {
+  const box = { matches: () => true, getAttribute: () => null, getBoundingClientRect: () => ({ width: 600, height: 80 }) };
+  const run = () => runInNewContext(`(${composerReady.toString()})()`, { document: { querySelector: () => box } });
+  assert.equal(run().ready, true);
+  box.disabled = true;
+  assert.equal(run().ready, false);
+});
+
 test("侧栏项目行提供项目地址时直接复用，不触发同名创建", () => {
   const original = { document: global.document, location: global.location };
   const project = { getAttribute: key => ({ "data-app-action-sidebar-project-label": "翻译",
@@ -44,6 +84,18 @@ test("侧栏项目行提供项目地址时直接复用，不触发同名创建",
     global.document = original.document;
     global.location = original.location;
   }
+});
+
+test('项目指令读取跳过尺寸为零的旧弹层', t => {
+  const original = global.document;
+  t.after(() => { global.document = original; });
+  const box = value => ({ value, getBoundingClientRect: () => ({ width: 200, height: 100 }),
+    closest: () => null, matches: () => false });
+  const dialog = (width, value) => ({ getBoundingClientRect: () => ({ width, height: 100 }),
+    closest: () => null, querySelectorAll: () => [box(value)] });
+  global.document = { querySelectorAll: selector => selector === '[role="dialog"],dialog'
+    ? [dialog(0, '旧指令'), dialog(300, '当前指令')] : [] };
+  assert.deepEqual(projectPage('read-instructions'), { opened: true, text: '当前指令' });
 });
 
 test("项目目录能找到侧栏未显示的同名项目", () => {
@@ -142,6 +194,11 @@ test("附件核验限定当前编辑区，项目库同名文件不能冒充已�
   global.document = { querySelector: () => ({ closest: () => root }), querySelectorAll: () => [] };
   try {
     assert.equal(composerAttachments("state", "source.pdf").attached, false);
+    input.disabled = images.disabled = true;
+    assert.deepEqual(composerAttachments('ready'), { ready: false, loading: true });
+    assert.equal(composerAttachments('input', 'source.pdf').input, false);
+    input.disabled = images.disabled = false;
+    assert.equal(composerAttachments('ready').ready, true);
     assert.equal(composerAttachments("input", "source.pdf").input, true);
     assert.equal(input['data-easyread-upload-input'], 'true');
     assert.equal(images['data-easyread-upload-input'], undefined, "PDF 不能走图片专用上传控件");
@@ -167,6 +224,10 @@ test("网页模型选择和回答回传保持一次完成事件", async () => {
     const inputCommands = [];
     const loadedURLs = [];
     let submitted = false;
+    let rejectNextDraft = false;
+    let composerChecks = 0;
+    let failNextUpload = false;
+    let accountReads = 0;
     const typed = [];
     const projectURL = "https://chatgpt.com/g/g-p-translation/project";
     const deletedURL = "https://chatgpt.com/g/g-p-deleted/project";
@@ -194,6 +255,10 @@ test("网页模型选择和回答回传保持一次完成事件", async () => {
             if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
             if (method === "DOM.querySelector") return { nodeId: 2 };
             if (method === "DOM.setFileInputFiles") {
+              if (failNextUpload) {
+                failNextUpload = false;
+                throw Object.assign(new Error('模拟附件控件暂不可用'), { code: 'WEB_ATTACHMENT_NOT_READY' });
+              }
               sentFiles.push(...args.files); attached = true;
               for (const listener of networkListeners) listener({}, 'Network.requestWillBeSent', {
                 requestId: 'upload', request: { method: 'POST', url: 'https://chatgpt.com/backend-api/files/process_upload_stream' },
@@ -218,9 +283,8 @@ test("网页模型选择和回答回传保持一次完成事件", async () => {
           executeJavaScript: async source => {
             // 真实运行前先确认生成的页面脚本语法正确。
             new Function("return " + source);
-            if (source.includes("/api/auth/session")) return "account";
             if (source.includes("!!document.querySelector('[data-testid=\"prompt-textarea\""))
-              return current !== deletedURL;
+              return false;
             if (source.includes("function projectPage")) {
               const args = JSON.parse(source.match(/\)\(\.\.\.(\[[\s\S]*\])\)$/)[1]);
               const [action, value] = args;
@@ -245,8 +309,10 @@ test("网页模型选择和回答回传保持一次完成事件", async () => {
                 : { text: full ? text : "", length: text.length, count: mouseEvents.length,
                   busy: false, complete: answerReads > 16 };
             }
-            if (source.includes("function promptMatches")) return { correct: !submitted,
-              actualLength: 10, expectedLength: 10 };
+            if (source.includes("function promptMatches")) {
+              if (rejectNextDraft) { rejectNextDraft = false; throw new Error('模拟提交前草稿失败'); }
+              return { correct: !submitted, actualLength: 10, expectedLength: 10 };
+            }
             if (source.includes("function composerSend")) {
               const [action] = JSON.parse(source.match(/\)\(\.\.\.(\[[\s\S]*\])\)$/)[1]);
               if (action === "submit") {
@@ -257,17 +323,18 @@ test("网页模型选择和回答回传保持一次完成事件", async () => {
             }
             if (source.includes("function composerAttachments")) {
               const [action] = JSON.parse(source.match(/\)\(\.\.\.(\[[\s\S]*\])\)$/)[1]);
+              if (action === 'ready') return { ready: ++composerChecks >= 4, loading: composerChecks < 4 };
+              assert.ok(composerChecks >= 4, '须等历史加载完成、上传入口解除禁用后才能处理附件');
               if (action === "clear") { attached = false; return { removed: 0 }; }
               return { attached, input: true };
             }
             if (source.includes("function pageUserCount")) return mouseEvents.length;
             if (source.includes(".some(e => (e.innerText || e.getAttribute('aria-label')")) return attached;
             if (source.includes("!!document.querySelector('input[type=\"file\"]')")) return true;
-            if (source.includes("!!document.querySelector('[data-testid=\"prompt-textarea\"")) return true;
             return null;
           },
         };
-        installRuntime(this.webContents);
+        installRuntime(this.webContents, async () => ++accountReads === 3 ? '' : 'account');
         this.setBounds = bounds => { this.bounds = bounds; };
         this.setVisible = value => { this.visible = value; };
       }
@@ -280,9 +347,10 @@ test("网页模型选择和回答回传保持一次完成事件", async () => {
     assert.equal((await web.status()).ready, true);
     assert.deepEqual(await web.initializeProject(), { ready: true, url: projectURL },
       "桌面启动时识别已删除的旧项目，重新创建并配置新项目");
+    assert.ok(accountReads >= 4, '状态检查独立核验登录，账号指纹读取暂时失败时先重读');
     assert.deepEqual((await web.models()).models.map(x => x.name), ["GPT Test"]);
     const events = [];
-    const execution = web.execute({ id: "r1", kind: "chat", model: "GPT Test", session: "paper/chat/t1",
+    const execution = web.execute({ id: "r1", kind: "translation", model: "GPT Test", session: "paper/chat/t1",
       cwd: home, prompt: "问题", files: [pdf], marks_rev: "0" }, async event => events.push(event));
     const deadline = Date.now() + 20000;
     while (mouseEvents.length < 1 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
@@ -327,6 +395,39 @@ test("网页模型选择和回答回传保持一次完成事件", async () => {
     assert.deepEqual(sentFiles, [pdf], "同一会话中已确认上传的 PDF 不重复上传");
     assert.equal(secondEvents.filter(event => event.done).length, 1);
     assert.equal((await web.status()).pending, 0);
+    // 连续批次中途失败：新附件未提交，不能污染历史；重试必须清掉旧草稿、重新上传。
+    const additional = path.join(home, 'next-page.jpg');
+    fs.writeFileSync(additional, 'synthetic-image');
+    rejectNextDraft = true;
+    const failedEvents = [];
+    await web.execute({ id: 'r3', kind: 'translation', model: 'GPT Test', session: 'paper/chat/t1',
+      cwd: home, prompt: '失败草稿', files: [pdf, additional] }, async event => failedEvents.push(event));
+    assert.match(failedEvents.at(-1).error, /模拟提交前草稿失败/);
+    assert.equal(mouseEvents.length, 2, '失败草稿不能发送模型请求');
+    const beforeRetry = JSON.parse(fs.readFileSync(path.join(home, 'chatgpt-web-sessions.json'), 'utf8'));
+    assert.equal(beforeRetry['paper/chat/t1'].files[additional], undefined);
+    // 模拟旧页面没回报结束的上传请求；已清理的草稿不能阻挡下一批。
+    for (const listener of networkListeners) listener({}, 'Network.requestWillBeSent', {
+      requestId: 'stale-upload', request: { method: 'POST', url: 'https://chatgpt.com/backend-api/files' },
+    });
+    const retriedEvents = [];
+    await web.execute({ id: 'r4', kind: 'translation', model: 'GPT Test', session: 'paper/chat/t1',
+      cwd: home, prompt: '恢复草稿', files: [pdf, additional] }, async event => retriedEvents.push(event));
+    assert.equal(sentFiles.filter(file => file === additional).length, 2, '未提交的附件应在重试时重新上传');
+    assert.equal(retriedEvents.filter(event => event.done).length, 1);
+    const afterRetry = JSON.parse(fs.readFileSync(path.join(home, 'chatgpt-web-sessions.json'), 'utf8'));
+    assert.ok(afterRetry['paper/chat/t1'].files[additional]);
+    assert.equal(afterRetry['paper/chat/t1'].pending, undefined);
+    const later = path.join(home, 'later-page.jpg');
+    fs.writeFileSync(later, 'later-image');
+    failNextUpload = true;
+    const autoRetried = [];
+    await web.execute({ id: 'r5', kind: 'translation', model: 'GPT Test', session: 'paper/chat/t1',
+      cwd: home, prompt: '自动恢复附件', files: [pdf, additional, later] }, async event => autoRetried.push(event));
+    assert.equal(autoRetried.filter(event => event.done).length, 1);
+    assert.equal(autoRetried.filter(event => event.submission_started).length, 1, '准备阶段重载不能重复提交');
+    assert.ok(autoRetried.some(event => /重新加载原会话/.test(event.message || '')));
+    assert.equal(mouseEvents.length, 4);
     assert.deepEqual(added.filter(view => view !== views[0] && view !== views[3]), [views[1], views[2]], "网页任务继续在同一后台容器中完成");
     assert.equal(views[0].bounds.x, 0, "执行网页保持在独立后台宿主中");
     assert.equal(views[0].visible, true);
@@ -376,7 +477,6 @@ test("成功配置跨启动复用，显式检查时才修复网页项目设置",
           } },
           executeJavaScript: async source => {
             new Function("return " + source);
-            if (source.includes("/api/auth/session")) return "account";
             if (source.includes("function projectPage")) {
               const [action] = JSON.parse(source.match(/\)\(\.\.\.(\[[\s\S]*\])\)$/)[1]);
               actions.push(action);
@@ -417,6 +517,7 @@ test("未登录时项目检查和网页任务保持 EasyRead 界面，只有手�
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "easyread-web-hidden-"));
   try {
     const views = [];
+    let readError = '', failReads = 0, authenticated = false, accountReads = 0;
     class WebContentsView {
       constructor() {
         let current = "";
@@ -430,7 +531,11 @@ test("未登录时项目检查和网页任务保持 EasyRead 界面，只有手�
           },
           on() {}, setWindowOpenHandler() {}, isDestroyed: () => false, close() {},
         };
-        installRuntime(this.webContents);
+        installRuntime(this.webContents, async () => {
+          accountReads++;
+          if (failReads-- > 0) throw new Error(readError);
+          return authenticated ? 'account' : '';
+        });
         this.setBounds = () => {};
         this.setVisible = value => { this.visible = value; };
       }
@@ -446,6 +551,25 @@ test("未登录时项目检查和网页任务保持 EasyRead 界面，只有手�
     const events = [];
     await web.execute({ id: "unsigned", session: "paper/chat", prompt: "问题" }, async event => events.push(event));
     assert.match(events.at(-1).error, /需要登录或验证/);
+    readError = '模拟网络连接失败';
+    failReads = 3;
+    await web.execute({ id: 'read-failed', session: 'paper/chat', prompt: '问题' }, async event => events.push(event));
+    assert.match(events.at(-1).error, /登录状态检查失败：ChatGPT 账号接口连接失败：模拟网络连接失败/);
+    assert.doesNotMatch(events.at(-1).error, /需要登录或验证/);
+    failReads = 1;
+    const beforeRetry = accountReads;
+    await web.execute({ id: 'read-retry', session: 'paper/chat', prompt: '问题' }, async event => events.push(event));
+    assert.equal(accountReads - beforeRetry, 2, '短暂网络故障后应重新读取真实登录状态');
+    assert.match(events.at(-1).error, /需要登录或验证/);
+    // 模拟用户停在项目目录，登录有效但页面没有输入框；状态检查不可导航或提交。
+    authenticated = true;
+    await web.webContents.loadURL('https://chatgpt.com/projects');
+    assert.equal((await web.status()).ready, true);
+    assert.equal(web.webContents.getURL(), 'https://chatgpt.com/projects');
+    await web.webContents.loadURL('https://auth.openai.com/log-in');
+    const beforeRedirect = accountReads;
+    assert.equal((await web.status()).ready, false);
+    assert.equal(accountReads, beforeRedirect, '登录跳转页面不得注入账号接口请求');
     assert.equal((await web.status()).visible, false);
     assert.equal(views[0].visible, true, "后台容器保持布局，收起时位于主页面下面");
     assert.deepEqual(calls, { show: 0, focus: 0, added: 0 });
@@ -521,7 +645,6 @@ test("同一请求重试先回收网页已完成回答，不再次发送", async
           session: { cookies: { get: async () => [{ name: "session", value: "account" }] } },
           executeJavaScript: async source => {
             new Function("return " + source);
-            if (source.includes("/api/auth/session")) return "account";
             if (source.includes("const list = pageMessages().answers")) {
               const full = !source.endsWith("(...[false])");
               if (full) fullAnswerReads++;
@@ -571,13 +694,11 @@ test("附属资源未加载完时，DOM 就绪即可检查页面，状态查询�
             return new Promise(() => {});
           },
           executeJavaScript: async source => {
-            new Function("return " + source);
-            if (source.includes("/api/auth/session")) accountReads++;
-            return true;
+            throw new Error('网页脚本不可执行时也应可以核验登录状态');
           },
           setWindowOpenHandler() {}, isDestroyed: () => false, close() {},
         });
-        installRuntime(this.webContents);
+        installRuntime(this.webContents, async () => { accountReads++; return 'account'; });
         this.setBounds = () => {};
         this.setVisible = () => {};
       }
@@ -589,7 +710,109 @@ test("附属资源未加载完时，DOM 就绪即可检查页面，状态查询�
     const status = await web.status();
     assert.equal(status.ready, true);
     assert.equal(status.visible, false);
-    assert.equal(accountReads, 0);
+    assert.equal(accountReads, 1, '状态查询通过账号接口确认登录，不修改持久化账号缓存');
+    assert.equal(fs.existsSync(path.join(home, 'chatgpt-web-project.json')), false);
     web.close();
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// 模拟已配置过的项目及纯文字网页，附件入口故意完全不可用。
+function textChatFixture(t, { staleComposer = false, failAccount = 0, pending = false } = {}) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'easyread-text-chat-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const projectURL = 'https://chatgpt.com/g/g-p-text/project';
+  const chatURL = 'https://chatgpt.com/g/g-p-text/c/chat-one';
+  const accountId = createHash('sha256').update('account').digest('hex');
+  const originalProject = { accountId, url: projectURL, instructionsHash: 'old', memoryScope: 'default' };
+  fs.writeFileSync(path.join(home, 'chatgpt-web-project.json'), JSON.stringify(originalProject));
+  const request = { id: 'text-chat', kind: 'chat', session: 'paper/chat', model: 'GPT Test',
+    prompt: '解释勾画的段落', cwd: home, files: [], options: { project_sync: true } };
+  if (pending) fs.writeFileSync(path.join(home, 'chatgpt-web-sessions.json'), JSON.stringify({
+    [request.session]: { url: chatURL, projectURL, accountId,
+      pending: { promptHash: createHash('sha256').update(request.prompt).digest('hex'), beforeAnswers: 0 } },
+  }));
+  const urls = [], events = [], inputs = [];
+  let sent = 0, projectLoads = 0, accountReads = 0;
+  class WebContentsView {
+    constructor() {
+      let current = '';
+      this.webContents = { focus() {}, getURL: () => current,
+        loadURL: async url => { current = url; urls.push(url); if (url === projectURL) projectLoads++; },
+        on() {}, setWindowOpenHandler() {}, isDestroyed: () => false, close() {},
+        debugger: { isAttached: () => true, attach() {}, on() {}, sendCommand: async method => {
+          assert.notEqual(method, 'DOM.setFileInputFiles', '问答不能上传任何附件');
+        } },
+        executeJavaScript: async source => {
+          new Function('return ' + source);
+          if (source.includes('function projectPage') || source.includes('function projectFilesPage'))
+            throw new Error('问答不能修改项目设置或同步项目文件');
+          if (source.includes('/api/auth/session')) throw new Error('不能通过网页脚本核验登录');
+          if (source.includes('function composerReady')) return { ready: !staleComposer || projectLoads >= 2 };
+          if (source.includes('function composerAttachments')) {
+            assert.ok(source.endsWith('(...["clear"])'), '只允许移除旧草稿附件，不等待上传控件');
+            return { removed: 0 };
+          }
+          if (source.includes('function modelMenu')) return { current: 'GPT Test' };
+          if (source.includes('function pastePrompt')) { inputs.push(request.prompt); return true; }
+          if (source.includes('function promptMatches')) return { correct: !sent, actualLength: request.prompt.length };
+          if (source.includes('function pageUserCount')) return sent;
+          if (source.includes('function composerSend')) {
+            if (source.endsWith('(...["submit"])')) { sent++; current = chatURL; }
+            return { found: true, ready: true };
+          }
+          if (source.includes('const list = pageMessages().answers'))
+            return { count: sent, length: sent ? 2 : 0, text: sent ? '解释' : '', complete: !!sent, busy: false };
+          return true;
+        },
+      };
+      installRuntime(this.webContents, async () => {
+        accountReads++;
+        if (accountReads <= failAccount) throw new TypeError('Failed to fetch');
+        return 'account';
+      });
+      this.setBounds = () => {};
+      this.setVisible = () => {};
+    }
+  }
+  const win = { on() {}, getContentSize: () => [1200, 800], show() {}, focus() {},
+    contentView: { addChildView() {}, removeChildView() {} } };
+  const web = createChatGPTWeb({ app: { getPath: () => home, getLocale: () => 'zh-CN' },
+    window: win, BrowserWindow: BackgroundWindow, WebContentsView, ipcMain: new EventEmitter() });
+  t.after(() => web.close());
+  return { web, home, request, urls, events, inputs, projectURL, chatURL, originalProject,
+    run: () => web.execute(request, async event => events.push(event)), sent: () => sent };
+}
+
+test('问 AI 复用已有项目，只发送文字；旧指令和锁定记忆模式不触发设置', async t => {
+  const f = textChatFixture(t);
+  await f.run();
+  assert.equal(f.events.at(-1).text, '解释');
+  assert.equal(f.events.at(-1).done, true);
+  assert.equal(f.sent(), 1);
+  assert.deepEqual(f.inputs, [f.request.prompt]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.home, 'chatgpt-web-project.json'), 'utf8')), f.originalProject);
+  assert.equal(f.urls.filter(url => url === f.projectURL).length, 1);
+});
+
+test('首次项目输入框不可用时自动刷新一次，恢复后只提交一次问题', async t => {
+  const f = textChatFixture(t, { staleComposer: true });
+  await f.run();
+  assert.equal(f.events.at(-1).done, true);
+  assert.equal(f.sent(), 1);
+  assert.equal(f.urls.filter(url => url === f.projectURL).length, 2);
+  assert.ok(f.events.some(event => /刷新原页面/.test(event.message || '')));
+});
+
+test('登录网络短暂故障可以恢复；未确认回答存在时不能自动刷新', async t => {
+  const f = textChatFixture(t, { failAccount: 1 });
+  await f.run();
+  assert.equal(f.events.at(-1).done, true);
+  assert.equal(f.sent(), 1);
+  assert.ok(f.events.some(event => /刷新后重新核验/.test(event.message || '')));
+  const waiting = textChatFixture(t, { failAccount: 3, pending: true });
+  await waiting.run();
+  assert.match(waiting.events.at(-1).error, /账号接口连接失败/);
+  assert.equal(waiting.sent(), 0);
+  assert.deepEqual(waiting.urls.filter(url => url.startsWith('https://chatgpt.com/')), [waiting.chatURL]);
+  assert.equal((await waiting.web.status()).pending, 1);
 });

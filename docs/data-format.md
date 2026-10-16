@@ -141,6 +141,42 @@ JSON 里 TeX 的反斜杠要写两个（`\\frac`）。`\f` `\b` `\t` `\n` `\r` �
 - `image_en` 是图内可读文字原文，`image_zh` 是目标语言的译文（字段名沿用历史叫法），在图下单独显示，不改图片像素。只读原文先显示 `image_en`，补译时按 `id#image` 写入，编辑和重译用同一个键
 - 旧论文不会自动调模型补提取图内文字；要重新整理对应页，或由 agent 核对原页后补上
 
+## ChatGPT 网页翻译任务与附件
+
+网页问答任务（`kind: chat`）仅使用文字消息：`files` 固定为空数组，`marks_rev` 为空字符串，不创建 `web-attachments` 或文件交付任务。问题、引用及相关阅读标记放在 `prompt`，同时提供论文题名和来源以检索已有项目资料。桌面执行器不会为问答上传附件、同步项目资料或修改项目设置；翻译任务继续使用下列文件协议。
+
+网页文件交付使用 `easyread-translation-v1` 信封：
+
+```json
+{
+  "protocol": "easyread-translation-v1",
+  "task_id": "32 位随机十六进制标识",
+  "source_sha256": "原始 source.pdf 的 SHA256",
+  "requested_pages": [1, 2, 3, 4],
+  "status": "complete",
+  "result": {"meta": {}, "glossary": [], "references": [], "checks": [], "blocks": []}
+}
+```
+
+`result` 保留上述完整块协议，包括原译文、公式、图表及引用。`blocks` 必需；包含第 1 页时 `meta` 必需，续批可以省略；包含 `references` 块时引用数组必需。没有新术语、参考文献列表或检查项时，对应数组可以省略，接收端统一补为空容器；已提供字段的类型仍须严格符合协议。示例中的空数组仅用于展示格式。文件名必须为 `easyread-<task_id>.json`；正文回退也必须使用同一信封。接收端要求合法 JSON、匹配的任务归属、唯一块 ID、范围内页码和至多 32 MiB 的普通文件。完成声明表示模型交付结束；有效页码仍由本地 `page_check`、格式核验与合并决定。
+
+论文目录内的派生文件：
+
+| 路径 | 用途 |
+|---|---|
+| `web-tasks/<输入哈希>.json` | 冻结的任务、输入附件、模型、PDF 指纹、页码、模式、提交状态、会话地址、下载阶段及指标 |
+| `web-attachments/context.json` | 从 `paper.json` 和 `reader.json` 刷新的有界快照；内容哈希不含生成时间 |
+| `web-attachments/context-<task_id>.json` | 当前任务的冻结快照，后续阅读标记变化不改写已提交输入 |
+| `web-artifacts/<task_id>.json` | 由 Electron 官方下载事件接收、校验的文件；临时下载用随机 `.part` 名称 |
+| `web-artifacts/<task_id>.json.<随机标识>.invalid` | 下载完整但校验失败的原始附件，仅供诊断，不参与译文合并 |
+| `web-answers/<task_id>.json` | 后端已确认接收、解包后的完整回答 |
+
+任务状态依次为 `prepared`、`pending`、`received`；格式明确不合格或用户确认允许重试时记录 `rejected`。`received` 仅表示结果已落盘，合并后另外记录 `merged_pages`、`missing_pages` 和 `parse_merge_ms`。重启优先恢复未合并的原批次及输入；模式、模型、阅读标记和批量设置变化不会自动重发旧任务。局部页码与原待恢复批次重叠时停止并要求核对。停止网页生成后保留 pending，避免丢失已生成附件。
+
+Electron 用户数据目录内，`chatgpt-web-project.json` 保存唯一项目的账号哈希、URL、指令哈希与 project-only 配置。`chatgpt-web-sessions.json` 的 schema 2 记录保留当前会话、请求/页数计数、pending 和 `history`，旧单会话在首次使用时补齐新字段。`chatgpt-resources/<账号和项目哈希>/index.json` 保存共享术语库来源、版本、远端精确 ID、上传 intent 和待清理版本。远程文件必须经过可见网页核验；未知同名文件不会被复用或删除。
+
+这些记录可包含论文内容与本机路径，应与论文数据一起保管；性能导出脚本只输出统计。其他 AI 来源不使用此协议。
+
 ## 为什么用 JSON 文件而不是数据库
 
 EasyRead 是个人工具：一个人、一台电脑、几十到几百篇论文。每篇一个文件夹、几个 JSON，好处是能直接看、能直接备份和同步（网盘、git 都行），agent 在对话里也能直接读写；按“谁写哪个文件”分开之后，也不需要数据库的并发控制。文献库列表每次扫描各文件夹生成，几百篇以内是毫秒级。浏览器 localStorage 只用来暂存还没写进文件的修改和缓存偏好，不是数据的正本。

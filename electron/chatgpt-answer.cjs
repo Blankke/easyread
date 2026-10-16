@@ -8,19 +8,23 @@ function readAnswer(list, full = true) {
   const busy = !!document.querySelector('[data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"]') ||
     node?.getAttribute('aria-busy') === 'true';
   if (!node) return { text: '', length: 0, revision: 0, count: 0, busy, complete: false };
-  const root = node.querySelector('.markdown, .prose, [data-testid="message-text"]') ||
+  const root = node.querySelector('.markdown, .prose, [data-testid="message-text"], [data-markdown-text-style="assistant-message"]') ||
     (node.querySelector('h4.sr-only') ? node.querySelector('h4.sr-only').parentElement?.children[1] : null) || node;
   const turn = node.closest('[data-testid^="conversation-turn-"], article') || node.parentElement?.parentElement || node.parentElement || node;
   // 代码块生成到一半也可能显示复制按钮，只有消息级操作才算完成信号。
   const complete = [...turn.querySelectorAll('button')].some(el => !el.closest('pre') && /copy|复制|regenerate|重新生成/i.test(
     [el.getAttribute('data-testid'), el.getAttribute('aria-label'), el.getAttribute('title')].filter(Boolean).join(' ')));
-  const raw = root.textContent || '';
+  // 文件卡片可能位于正文外，且回答本身没有文字；将附件名称纳入稳定性判定。
+  const attachmentNames = [...new Set([...node.querySelectorAll('a[download],a[href],[title]')]
+    .map(el => el.getAttribute('download') || el.getAttribute('title') || el.textContent || '')
+    .flatMap(name => name.match(/easyread-[a-f0-9]{32}\.json/g) || []))];
+  const raw = (root.textContent || '') + attachmentNames.join('\n');
   // 比较内容而非仅比较长度；等长替换、公式重绘也会更新版本。缓存仅保留最近一条回答。
   const previous = globalThis.__easyreadAnswerSnapshot;
   const revision = previous && previous.node === node && previous.raw === raw
     ? previous.revision : (previous?.revision || 0) + 1;
   globalThis.__easyreadAnswerSnapshot = { node, raw, revision };
-  const state = { text: '', length: raw.trim().length, revision, count: list.length, busy, complete };
+  const state = { text: '', length: raw.trim().length, revision, count: list.length, busy, complete, attachments: attachmentNames.length };
   if (!full) return state;
   // JSON 中的自动链接保留原文字；普通问答保留 Markdown 与 TeX 语义。
   const plain = (root.innerText || raw).trim();

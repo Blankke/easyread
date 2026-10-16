@@ -56,7 +56,7 @@ test('轻量状态不读取 innerText，等长正文变化会更新版本，JSON
   let codeOnly = false;
   const turn = { querySelectorAll: () => [{ closest: () => codeOnly ? {} : null,
     getAttribute: name => name === 'aria-label' ? '复制' : null }] };
-  const node = { getAttribute: () => null, querySelector: () => root, closest: () => turn };
+  const node = { getAttribute: () => null, querySelector: () => root, querySelectorAll: () => [], closest: () => turn };
   global.document = { querySelector: () => null };
   const first = readAnswer([node], false);
   assert.equal(first.complete, true);
@@ -79,8 +79,61 @@ test('代码块直接读取 code 原文，不混入复制按钮或重复遍历�
     innerText: '复制代码\n{"value":1}', classList: { contains: () => false },
     closest: () => null, querySelector: () => ({ textContent: '{"value":1}' }),
     get childNodes() { throw new Error('不应递归遍历代码块'); } };
-  const node = { getAttribute: () => null, querySelector: () => pre,
+  const node = { getAttribute: () => null, querySelector: () => pre, querySelectorAll: () => [],
     closest: () => ({ querySelectorAll: () => [] }) };
   global.document = { querySelector: () => null };
   assert.equal(readAnswer([node]).text, '```\n{"value":1}\n```');
+});
+
+test('网页矩阵从 TeX 注解读取，保留换行并跳过视觉层和 SVG 文本', t => {
+  const previous = { document: global.document, Node: global.Node, snapshot: global.__easyreadAnswerSnapshot };
+  t.after(() => { global.document = previous.document; global.Node = previous.Node;
+    global.__easyreadAnswerSnapshot = previous.snapshot; });
+  global.Node = { TEXT_NODE: 3, ELEMENT_NODE: 1 };
+  global.document = { querySelector: () => null };
+  const tex = String.raw`\mathbf H_2=\frac{1}{\sqrt{2}}\begin{bmatrix}1&1\\1&-1\end{bmatrix}`;
+  let display = true;
+  const annotation = { nodeType: 1, tagName: 'ANNOTATION', textContent: tex,
+    classList: { contains: () => false }, getAttribute: () => 'application/x-tex',
+    closest: () => display ? {} : null };
+  const math = { nodeType: 1, tagName: 'SPAN', classList: { contains: name => name === 'katex' },
+    querySelector: () => annotation,
+    get childNodes() { throw new Error('不能遍历公式视觉层'); } };
+  const root = { nodeType: 1, tagName: 'DIV', textContent: 'H2=2svg11…', innerText: 'H2=2svg11…',
+    classList: { contains: () => false }, closest: () => null, childNodes: [math] };
+  const node = { getAttribute: () => null, querySelector: () => root, querySelectorAll: () => [],
+    closest: () => ({ querySelectorAll: () => [] }) };
+  assert.equal(readAnswer([node]).text, '$$' + tex + '$$');
+  display = false;
+  assert.equal(readAnswer([node]).text, '$' + tex + '$');
+});
+
+test('只有结果附件的回答也能等待稳定，不把卡片丢在正文之外', t => {
+  const previous = global.document;
+  t.after(() => { global.document = previous; });
+  global.document = { querySelector: () => null };
+  const node = { getAttribute: () => null, querySelector: () => ({ textContent: '' }),
+    querySelectorAll: () => [{ getAttribute: () => `easyread-${'a'.repeat(32)}.json` }],
+    closest: () => ({ querySelectorAll: () => [{ closest: () => null, getAttribute: () => 'copy' }] }) };
+  const state = readAnswer([node], false);
+  assert.equal(state.attachments, 1);
+  const ready = createAnswerGate(0);
+  assert.equal(ready(state, 0), false);
+  assert.equal(ready(state, 500), true);
+});
+
+test('新版按钮卡片按文件标题参与稳定性判定，同文件多个标题只计一次', t => {
+  const previous = global.document;
+  t.after(() => { global.document = previous; });
+  global.document = { querySelector: () => null };
+  let name = `easyread-${'a'.repeat(32)}.json`;
+  const title = { getAttribute: key => key === 'title' ? name : null };
+  const node = { getAttribute: () => null, querySelector: () => ({ textContent: '' }),
+    querySelectorAll: selector => selector.includes('[title]') ? [title, title] : [],
+    closest: () => ({ querySelectorAll: () => [] }) };
+  const state = readAnswer([node], false);
+  assert.equal(state.attachments, 1);
+  assert.equal(state.length, name.length);
+  name = `easyread-${'b'.repeat(32)}.json`;
+  assert.equal(readAnswer([node], false).revision, state.revision + 1);
 });

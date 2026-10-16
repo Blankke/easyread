@@ -1,12 +1,19 @@
 /*
  * 用法（Windows PowerShell）：
- *   node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --inspect
+ *   node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --inspect-status
  *   node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --inspect-pending
  *   node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --clear-pending
  *   node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --setup-project
  *   node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --inspect-project
+ *   node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --inspect-controls
+ *   node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --inspect-resources
+ *   node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --inspect-composer <论文ID>
+ *   node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --sync-resources library/<论文ID>
+ * --sync-resources 实际同步项目术语资料并核验持久化，重复运行验证版本复用，不发送翻译请求。
+ * 资料与编辑区诊断只打开网页菜单，不上传文件或发送问题。
+ * --inspect-controls 只打开项目菜单，输出控件标签以排查 DOM，不修改资料或指令。
  *   node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs C:\path\to\source.pdf "模型名"
- * --inspect 只查看登录和项目数量；--setup-project 核对或设置项目；传入论文会发送一次测试提问。
+ * --inspect-status 只查看登录和项目数量；--setup-project 核对或设置项目；传入论文会发送一次测试提问。
  * 性能诊断：先设置 $env:EASYREAD_WEB_TRACE="1"，再运行论文验证命令，查看各阶段耗时。
  * 仅输出状态和回答长度，不打印论文、回答正文或账号资料。
  */
@@ -18,14 +25,21 @@ const { createChatGPTWeb } = require("../electron/chatgpt-web.cjs");
 
 app.setName("EasyRead");
 app.setPath("userData", path.join(app.getPath("appData"), "EasyRead"));
+// 诊断中的网页导航可关闭临时窗口，退出由 main 的完成或失败统一决定。
+app.on('window-all-closed', () => {});
 
 async function main() {
-  const inspect = process.argv[2] === "--inspect";
+  // 避免使用 Electron 会吞掉并开启调试端口的 --inspect 参数。
+  const inspect = process.argv[2] === "--inspect-status";
   const inspectPending = process.argv[2] === "--inspect-pending";
   const clearPending = process.argv[2] === "--clear-pending";
   const setup = process.argv[2] === "--setup-project";
   const inspectProject = process.argv[2] === "--inspect-project";
-  const pdf = !inspect && !inspectPending && !clearPending && !setup && !inspectProject ? path.resolve(process.argv[2] || "") : "";
+  const inspectControls = process.argv[2] === '--inspect-controls';
+  const inspectResources = process.argv[2] === '--inspect-resources';
+  const inspectComposer = process.argv[2] === '--inspect-composer';
+  const syncResources = process.argv[2] === '--sync-resources';
+  const pdf = !inspect && !inspectPending && !clearPending && !setup && !inspectProject && !inspectControls && !inspectResources && !inspectComposer && !syncResources ? path.resolve(process.argv[2] || "") : "";
   const model = pdf ? process.argv[3] || "" : "";
   if (pdf && (!fs.existsSync(pdf) || !model)) throw new Error("请提供现有论文的 source.pdf 路径和网页模型名称");
   const page = pdf ? path.join(path.dirname(pdf), "extract", "page-001.txt") : "";
@@ -42,6 +56,106 @@ async function main() {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
     if (!status.ready) throw new Error("当前 Windows 桌面登录会话不可用，请先在 EasyRead 内登录 ChatGPT");
+    if (syncResources) {
+      if (!process.argv[3]) throw new Error('请提供论文目录');
+      const result = await web.syncResources(path.resolve(process.argv[3]));
+      console.log(JSON.stringify(result));
+      if (result.status !== 'confirmed') throw new Error(result.error || '项目资料同步未确认');
+      return;
+    }
+    if (inspectResources || inspectComposer) {
+      const wc = web.webContents;
+      if (!wc.debugger.isAttached()) wc.debugger.attach();
+      const evaluate = async expression => {
+        const result = await wc.debugger.sendCommand('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, userGesture: true });
+        if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
+        return result.result.value;
+      };
+      const project = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'chatgpt-web-project.json')));
+      const sessions = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'chatgpt-web-sessions.json')));
+      const saved = Object.entries(sessions).find(([key]) => key.includes(process.argv[3]) && key.endsWith('/translation'))?.[1];
+      if (inspectComposer && !saved?.url) throw new Error('找不到指定论文的翻译会话');
+      await Promise.race([wc.loadURL(inspectComposer ? saved.url : project.url).catch(() => {}), new Promise(resolve => setTimeout(resolve, 12000))]);
+      for (let attempt = 0; attempt < 120; attempt++) {
+        const ready = await evaluate(inspectComposer ? `!!document.querySelector('main input[type="file"]')` :
+          `[...document.querySelectorAll('main h1,main h2')].some(el=>el.textContent.trim()==='翻译')`);
+        if (ready) break;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      const snapshot = `(() => ({
+        controls:[...document.querySelectorAll('main button,[role="tab"],[role="menuitem"],[role="dialog"] button')]
+          .filter(el => el.getBoundingClientRect().width > 0).slice(-65).map(el => ({
+            tag:el.tagName,role:el.getAttribute('role'),label:(el.getAttribute('aria-label') || el.textContent || '').trim().slice(0,150),
+            disabled:el.disabled,expanded:el.getAttribute('aria-expanded'),selected:el.getAttribute('aria-selected'),
+            attrs:[...el.attributes].filter(a=>/^(data-|id$|aria-controls)/.test(a.name)).map(a=>[a.name,a.value.slice(0,160)])})),
+        inputs:[...document.querySelectorAll('input[type="file"]')].map(el=>({accept:el.accept,disabled:el.disabled,inForm:!!el.closest('form'),html:el.outerHTML.slice(0,900)})),
+        panels:[...document.querySelectorAll('[role="tabpanel"],[role="dialog"]')].filter(el=>el.getBoundingClientRect().width>0)
+          .map(el=>({text:el.innerText.slice(0,500),html:el.outerHTML.replace(/<svg[\\s\\S]*?<\\/svg>/g,'').slice(0,16000)}))
+      }))()`;
+      console.log(JSON.stringify({ before: await evaluate(snapshot) }));
+      if (inspectResources) await evaluate(`(() => {
+        const tab=[...document.querySelectorAll('button,[role="tab"]')].find(el=>el.getBoundingClientRect().width>0 && /^(来源|资料|sources)(\\s*\\d+)?$/i.test((el.textContent||'').trim()));
+        tab?.click(); return !!tab;
+      })()`);
+      else {
+        const { composerAttachments } = require('../electron/chatgpt-web.cjs');
+        console.log(JSON.stringify({ open: await evaluate(`(${composerAttachments.toString()})('open')`) }));
+      }
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      if (inspectResources) for (let attempt = 0; attempt < 120; attempt++) {
+        const ready = await evaluate(`(() => {
+          const tab=[...document.querySelectorAll('[role="tab"]')].find(el=>/来源|sources/i.test(el.textContent));
+          const panel=tab && document.getElementById(tab.getAttribute('aria-controls'));
+          return panel && panel.getBoundingClientRect().width>0 && ![...panel.querySelectorAll('[role="status"]')]
+            .some(el=>/加载|loading/i.test(el.textContent));
+        })()`);
+        if (ready) break;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      console.log(JSON.stringify({ after: await evaluate(snapshot) }));
+      return;
+    }
+    if (inspectControls) {
+      const { projectPage } = require('../electron/chatgpt-project.cjs');
+      const cached = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'chatgpt-web-project.json'), 'utf8'));
+      const wc = web.webContents;
+      if (!wc.debugger.isAttached()) wc.debugger.attach();
+      const evaluate = async expression => {
+        const result = await wc.debugger.sendCommand('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, userGesture: true });
+        if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
+        return result.result.value;
+      };
+      await Promise.race([wc.loadURL(cached.url).catch(error => {
+        // 网站客户端重定向可能使 loadURL 返回 ERR_ABORTED，随后仍按可见标题核实。
+        if (error.code !== 'ERR_ABORTED' && error.errno !== -3) throw error;
+      }), new Promise(resolve => setTimeout(resolve, 12000))]);
+      let ready = false;
+      for (let n = 0; n < 120 && !ready; n++) {
+        ready = await evaluate(`!![...document.querySelectorAll('main h1,main h2')].find(el => el.textContent.trim() === '翻译')`);
+        if (!ready) await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      if (!ready) throw new Error('项目页面尚未加载完成');
+      const controls = `JSON.stringify([...document.querySelectorAll('main button,[role="menuitem"],[role="dialog"] button')]
+        .filter(el => el.getBoundingClientRect().width > 0).slice(0,40).map(el => ({
+          label:(el.getAttribute('aria-label') || el.textContent || '').trim().slice(0,100),
+          testid:el.getAttribute('data-testid'), role:el.getAttribute('role'), disabled:el.disabled,
+          expanded:el.getAttribute('aria-expanded')})))`;
+      console.log(await evaluate(controls));
+      console.log(JSON.stringify(await evaluate(`(${projectPage.toString()})('open-settings-menu','翻译')`)));
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      console.log(await evaluate(controls));
+      console.log(JSON.stringify(await evaluate(`(${projectPage.toString()})('open-settings')`)));
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      let instructions = await evaluate(`(${projectPage.toString()})('read-instructions')`);
+      if (!instructions.opened) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        instructions = await evaluate(`(${projectPage.toString()})('read-instructions')`);
+      }
+      console.log(JSON.stringify({ instructionsOpened: instructions.opened, length: instructions.text?.length,
+        currentVersion: instructions.text?.includes('【EasyRead 通用指令·版本 3】'), error: instructions.error }));
+      console.log(await evaluate(controls));
+      return;
+    }
     if (inspectProject) {
       // 从项目页面的会话列表核验归属；不使用普通会话作为翻译验证。
       const cached = JSON.parse(fs.readFileSync(path.join(app.getPath("userData"), "chatgpt-web-project.json"), "utf8"));
@@ -94,6 +208,34 @@ async function main() {
         userCount: users.length, lastUserLength: users.at(-1)?.length || 0,
         conversationURL: old.url?.includes('/c/'),
         lastUserHashMatches: users.some(text => hash(text) === old.pending.promptHash) }));
+      const links = await wc.debugger.sendCommand('Runtime.evaluate', { returnByValue: true,
+        expression: `JSON.stringify([...document.querySelectorAll('a[href],button')]
+          .filter(el => /sandbox:|\\.json|下载|download/i.test((el.getAttribute('href') || '') + (el.textContent || '')))
+          .slice(0,12).map(el => ({ tag:el.tagName, label:(el.textContent || '').trim().slice(0,100),
+            href:(el.getAttribute('href') || '').split('?')[0].slice(0,200),
+            width:el.getBoundingClientRect().width, height:el.getBoundingClientRect().height })))` });
+      console.log(links.result.value);
+      // 诊断虚拟滚动及新版文件卡片：只输出控件结构与短标签，不输出论文全文。
+      const structure = await wc.debugger.sendCommand('Runtime.evaluate', { returnByValue: true,
+        expression: `(() => {
+          const roots = [...document.querySelectorAll('[data-message-author-role="assistant"], h4.sr-only')]
+            .filter(el => el.matches('[data-message-author-role="assistant"]') || /^(ChatGPT|助手)/i.test(el.textContent.trim()))
+            .map(el => el.matches('h4') ? el.closest('div[class^="block-"]') : el).filter(Boolean);
+          roots.at(-1)?.scrollIntoView({block:'end'});
+          return roots.slice(-2).map(el => ({tag:el.tagName, cls:el.className,
+            controls:[...el.querySelectorAll('button,[role="button"],a[href],[title]')].slice(0,30)
+              .map(control => ({tag:control.tagName, label:(control.getAttribute('aria-label') ||
+                control.getAttribute('title') || control.textContent || '').slice(0,160),
+                width:control.getBoundingClientRect().width, height:control.getBoundingClientRect().height}))}));
+        })()` });
+      console.log(JSON.stringify({ structure: structure.result.value }));
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      const image = await wc.capturePage().catch(() => null);
+      if (image) {
+        const file = path.join(require('node:os').tmpdir(), 'easyread-pending-debug.png');
+        fs.writeFileSync(file, image.toPNG());
+        console.log(JSON.stringify({ debugImage: file }));
+      }
       return;
     }
     if (inspect) {

@@ -1,18 +1,47 @@
 /*
  * 用法：node scripts/dev_desktop.cjs scripts/verify_web_background.cjs
  * 在隐藏的 Electron 窗口和网页容器中验证实际视口、富文本状态、表单发送与回答提取。
- * 使用本地测试页面，不访问账号、不发送论文、不创建登录缓存。
+ * 使用本地测试页面，另以临时 Chromium 会话验证 Cookie 登录核验；不访问真实账号或发送论文。
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const http = require('node:http');
 const { app, BrowserWindow, WebContentsView } = require('electron');
 const { ipcMain } = require('electron');
-const { createChatGPTWeb, composerSend, promptMatches, pastePrompt } = require('../electron/chatgpt-web.cjs');
+const { createChatGPTWeb, readAccountId, composerSend, promptMatches, pastePrompt } = require('../electron/chatgpt-web.cjs');
 const { readAnswer } = require('../electron/chatgpt-answer.cjs');
 
 app.whenReady().then(async () => {
+  // 真实网页即使把 fetch 包装成失败函数，会话网络层仍应携带同一容器的 Cookie。
+  const server = http.createServer((req, res) => {
+    if (req.url === '/auth') {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(req.headers.cookie?.includes('fixture=ready') ? { user: { id: 'fixture-account' } } : {}));
+    } else {
+      res.setHeader('Set-Cookie', 'fixture=ready; Path=/; HttpOnly; SameSite=Lax');
+      res.setHeader('Content-Type', 'text/html');
+      res.end('<script>window.fetch=()=>Promise.reject(new TypeError("Failed to fetch"))</script>');
+    }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const authView = new WebContentsView({ webPreferences: { partition: `easyread-auth-fixture-${Date.now()}` } });
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    await authView.webContents.loadURL(base);
+    assert.equal(await authView.webContents.executeJavaScript('fetch("/auth").catch(error => error.message)'), 'Failed to fetch');
+    const id = await readAccountId({ fetch: (url, options) => {
+      assert.equal(url, 'https://chatgpt.com/api/auth/session');
+      return authView.webContents.session.fetch(base + '/auth', options);
+    } });
+    assert.equal(id, 'fixture-account');
+    console.log(JSON.stringify({ sessionAuth: true, cookieShared: true, pageFetchIndependent: true }));
+  } finally {
+    authView.webContents.close();
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
   const win = new BrowserWindow({ width: 1200, height: 800, show: false });
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'easyread-background-'));
   const web = createChatGPTWeb({ app: { getPath: () => home, getLocale: () => 'zh-CN' },

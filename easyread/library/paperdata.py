@@ -43,7 +43,8 @@ def parse_pages(spec) -> list[int]:
     return out
 
 
-def merge_blocks(ws: Workspace, data: dict, done=None, replace_pages=None, en_only: bool = False, drop_ids=None) -> dict:
+def merge_blocks(ws: Workspace, data: dict, done=None, replace_pages=None, en_only: bool = False, drop_ids=None,
+                 protect_edits: bool = False) -> dict:
     """并入一批块。同 id 整块替换；新块按 _after 或页码顺序插入。
     replace_pages：先删掉这些页上已有的块（重新翻译某几页时用）。
     en_only：这批是“只读原文”整理出来的、只有英文的块，done 的页记进 translation.en_pages；否则从 en_pages 里去掉。
@@ -63,6 +64,14 @@ def merge_blocks(ws: Workspace, data: dict, done=None, replace_pages=None, en_on
 
     def apply(paper):
         blocks = paper.setdefault("blocks", [])
+        if protect_edits:
+            # 与 reader 写入使用同一目录锁；把生成期间刚保存的人工修改也纳入保护。
+            affected = {b["id"] for b in blocks if b.get("page") in (replace_pages or [])}
+            affected.update(drop_ids or [])
+            affected.update(b["id"] for b in data.get("blocks", []))
+            if any(key.split("#", 1)[0] in affected and not edit.get("reverted")
+                   for key, edit in (ws.load("reader").get("edits") or {}).items()):
+                raise ValueError("本批包含用户手动修改的译文，已保留原内容")
         if replace_pages:
             drop = set(replace_pages)
             blocks[:] = [b for b in blocks if b.get("page") not in drop]

@@ -180,7 +180,8 @@ def prompt(ws: Workspace, messages: list[dict], anchor: str | None, quote: str, 
     if engine == "chatgpt_web":
         from .chat_options import web_depth_instruction
         style += web_depth_instruction(answer_depth)
-    whole = _paper_context(ws) if answer_style in answer_styles.WHOLE_PAPER else ""
+    # 网页问答从已有项目资料检索全文，消息只携带问题、引用及附近段落，避免重复粘贴整篇论文。
+    whole = _paper_context(ws) if engine != "chatgpt_web" and answer_style in answer_styles.WHOLE_PAPER else ""
     # ChatGPT 网页的通用角色与公式要求已在“翻译”项目指令中设置；本轮只发回答风格和论文上下文。
     shared = "" if engine == "chatgpt_web" else ("你在陪读者读一篇学术论文，回答他边读边冒出来的问题。\n"  # i18n-ok
             + "区分“论文里写了什么”和“你的补充解释”，论文里没有的内容不要说成是论文说的。"  # i18n-ok

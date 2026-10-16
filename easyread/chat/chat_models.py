@@ -96,7 +96,7 @@ def engine_cfg(cfg: dict, mid: str | None) -> tuple[dict, dict]:
         for key in ("reasoning_effort", "service_tier"):
             out[m["engine"]][key] = m.get(key) or ""
     elif m["engine"] == "chatgpt_web":
-        out["chatgpt_web"] = {"model": m.get("model") or ""}
+        out["chatgpt_web"] = {**out.get("chatgpt_web", {}), "model": m.get("model") or ""}
     elif m["engine"] == "openai":
         p = next((x for x in PRESETS if x["id"] == m.get("preset")), None)
         out["openai"] = {**out["openai"], "preset": m.get("preset") or "", "vision": False,

@@ -5,10 +5,12 @@
 const PROJECT_NAME = "翻译";
 // 这是 ChatGPT 项目指令的唯一权威版本；修改正文时递增版本号，桌面版会按内容哈希重新同步。
 // 具体 JSON 结构、句子对齐和目标语言由每轮任务指定，此处只保留跨任务稳定的规则。
-const INSTRUCTIONS = `【EasyRead 通用指令·版本 2】
+const INSTRUCTIONS = `【EasyRead 通用指令·版本 3】
 你协助读者通过 EasyRead 阅读、翻译和核对学术论文。优先保证原文忠实、术语一致、便于核对和输出可被软件解析。本轮明确指定的任务、目标语言、页码、术语表、回答方式及输出格式优先于以下默认规则；未指定语言时使用简体中文。
 
 每次只处理当前对话提供的论文及本轮相关材料。不同论文之间不得混用事实、公式、实验结果、术语表或阅读笔记。先前对话可以帮助理解读者的问题，不能作为当前论文内容的证据。读者的标记和笔记表达读者的关注或判断，不自动代表作者观点。
+
+当前任务指定的 PDF、原页图与辅助原文是事实依据；项目内其他论文的会话、资料和记忆不得作为当前论文事实证据。当前任务的术语表优先于共享术语资料和项目记忆。本地上下文快照只提供指定论文的背景，以其中论文 ID 和 PDF 指纹核对归属；已完成页面、块 ID、人工修改与检查结果以 EasyRead 本地数据为准。项目记忆不得扩大本轮翻译范围，也不得决定覆盖哪些译文。
 
 翻译时只翻译本轮指定的范围。相邻页面、前文译文和摘要可用于理解上下文，不因此扩大输出范围。有原始 PDF 且能够读取时，用它核对页码、阅读顺序、公式和图表；有原页图时，用图核对版面。文字提取结果仅作辅助。双栏、跨页续句、脚注和浮动图表按实际阅读顺序处理，避免遗漏、重复或拼接不相邻的内容。无法读取或辨认的部分不要猜测，也不要声称已经核对。
 
@@ -23,6 +25,7 @@ const INSTRUCTIONS = `【EasyRead 通用指令·版本 2】
 读者提问时，先回答问题，再给出相关依据和必要解释。区分论文明确陈述、依据论文作出的推导，以及帮助理解的补充知识；补充知识不得冒充论文结论。涉及论文事实时，尽量给出可核对的章节、PDF 页码、公式或图表编号，不向读者展示 EasyRead 内部块 ID。解释机制时按需说明输入、输出、关键操作、变量含义和约束；解释实验时交代实际相关的模型、数据、基线、指标及条件。材料不足或论文未报告的结果应明确说明。
 
 输出前核对范围是否完整，数值、限定词、否定、术语、公式及引用是否准确，格式是否符合本轮要求。只输出最终结果，不展示核查过程。
+本轮指定文件交付时，将完整结构化结果写入指定 JSON 文件，提供可下载附件；严格填写本轮任务信封，正文不必重复文件内容。文件结果仍须接受 EasyRead 本地校验，网页完成声明不代表译文已经写回。
 【EasyRead 通用指令结束】`;
 
 // 该函数会序列化后在网页执行；不读取网页私有接口，也不暴露本地桥凭据。
@@ -30,9 +33,8 @@ function projectPage(action, value = "") {
   try {
   const visible = el => {
     const r = el.getBoundingClientRect();
-    if (r.width > 0 && r.height > 0) return true;
-    // 窄侧栏或收起的 WebContentsView 会让项目行宽度为 0，仍可按精确标签调用。
-    return !el.closest('[aria-hidden="true"]') && getComputedStyle(el).display !== "none";
+    // 后台容器已有固定视口；隐藏的旧菜单和编辑器不能冒充当前可操作控件。
+    return r.width > 0 && r.height > 0 && !el.closest('[aria-hidden="true"]');
   };
   const label = el => (el.getAttribute("aria-label") || el.innerText || el.textContent || "").trim();
   const controls = root => [...root.querySelectorAll('button,[role="button"],[role="menuitem"]')].filter(visible);
@@ -148,6 +150,12 @@ function projectPage(action, value = "") {
       selection.addRange(range);
     }
     return true;
+  }
+  if (action === "instructions-saved") {
+    const save = find(dialog() || document.querySelector('main') || document,
+      /^(save|保存|save changes|保存更改|完成|done)$/i);
+    // 当前网页保存后保留项目设置面板，移除指令编辑器的保存按钮。
+    return !editor() || !save;
   }
   if (action === "read-memory") {
     const root = dialog();

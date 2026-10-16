@@ -69,7 +69,7 @@
       Object.assign(c.openai, { preset: m.preset || "", base_url: m.base_url || (p ? p.base_url : ""), api: m.api || (p && p.api) || "chat",
         model: m.model, api_key: typed || (PR.apiHasKey(s, m.preset, m.base_url) ? "••••" : ""), vision: rec ? !!rec.vision : !!c.openai.vision });
     } else if (m.engine === "chatgpt_web") {
-      c.chatgpt_web = { model: m.model || "" };
+      c.chatgpt_web = { ...c.chatgpt_web, model: m.model || "" };
     } else {
       if (m.engine === "codex" && c.codex.model !== (m.model || "")) c.codex.reasoning_effort = "";
       c[m.engine].model = m.model || "";
@@ -180,6 +180,21 @@
       '<label class="field"><span>' + PR.t("超过多少页先问我") + '</span><select class="input" data-k="page_cap">' + PR.opt([30, 60, 100, 200].map((n) => [n, PR.t("{n} 页", { n })]).concat([[0, PR.t("不限")]]), c.page_cap == null ? 60 : c.page_cap) + "</select></label></div>" +
       '<div class="paper-concurrency-note" id="paperConcurrencyNote" role="note">' + PR.t("多篇并行会与单篇分段并发叠加，增加内存占用并可能触发模型限流，建议保持默认 1 篇，最多 4 篇，修改后重启 EasyRead 生效。") + '</div>' +
       '<div class="test-line"><button class="btn sm line" id="testBtn">' + PR.icon("sparkle", "sm") + PR.t("试译一句") + '</button><span class="test-result" id="testRes"></span></div>';
+    if (e === "chatgpt_web") {
+      const w = c.chatgpt_web || {};
+      const number = (key, label, fallback, min, max) => '<label class="field"><span>' + PR.esc(label) +
+        '</span><input class="input" type="number" min="' + min + '" max="' + max + '" data-k="chatgpt_web.' + key +
+        '" value="' + PR.esc(String(w[key] ?? fallback)) + '"></label>';
+      h += '<div class="grid2"><label class="field"><span>' + PR.t("网页结果交付") + '</span><select class="input" data-k="chatgpt_web.output_mode">' +
+        PR.opt([["text", PR.t("正文 JSON（稳定选项）")], ["file", PR.t("JSON 文件（实验性）")], ["auto", PR.t("优先文件，完整正文可回退")]], w.output_mode || "text") + '</select></label>' +
+        number("file_batch_pages", PR.t("文件模式每批页数"), 4, 1, 12) +
+        number("rotate_requests", PR.t("每会话最多翻译请求"), 12, 1, 1000) +
+        number("rotate_pages", PR.t("每会话累计页数阈值"), 48, 1, 10000) +
+        number("rotate_messages", PR.t("历史消息阈值（0 为关闭）"), 0, 0, 10000) +
+        number("project_file_limit", PR.t("项目文件数量上限"), 5, 1, 40) + '</div>' +
+        '<label class="check"><input type="checkbox" data-k="chatgpt_web.rotate_enabled"' + (w.rotate_enabled !== false ? ' checked' : '') + '>' + PR.t("自动轮换翻译会话") + '</label>' +
+        '<label class="check"><input type="checkbox" data-k="chatgpt_web.project_sync"' + (w.project_sync ? ' checked' : '') + '>' + PR.t("同步共享术语库到项目（实验性）") + '</label>';
+    }
     return h;
   }
   /* 页面上翻译那几项的值读回 cfg（存的时候 settings.js 从 cfg 取） */
@@ -187,7 +202,7 @@
     PR.$$("[data-k]", root()).forEach((el) => {
       const [a, b] = el.dataset.k.split(".");
       const v = el.type === "checkbox" ? el.checked : el.value;
-      if (b) s.cfg[a][b] = b === "batch_pages" ? +v : v; else s.cfg[a] = ["batch_pages", "concurrency", "paper_concurrency", "page_cap"].includes(a) ? +v : v;
+      if (b) s.cfg[a][b] = el.type === "number" || b === "batch_pages" ? +v : v; else s.cfg[a] = ["batch_pages", "concurrency", "paper_concurrency", "page_cap"].includes(a) ? +v : v;
     });
   }
 
@@ -227,7 +242,11 @@
       return '<div class="settings-sec"><h4 class="set-h">' + PR.t("ChatGPT 网页") + '</h4><p class="hint">' + PR.esc(s.webStatus ? (s.webStatus.ready ? PR.t("已登录") + " · " + projectHint : s.webStatus.error || PR.t("未登录；需要时请主动打开 ChatGPT 完成登录")) : PR.t("请使用 Electron 桌面版")) + '</p>' +
         (s.webModelsError ? '<p class="hint">' + PR.esc(s.webModelsError) + '</p>' : "") + '<p class="hint">' + PR.t("点击网页顶部的关闭，或按 Esc 返回 EasyRead") + '</p>' +
         (window.easyreadDesktop ? '<button class="btn sm" data-web-action="open">' + PR.t("打开 ChatGPT") + '</button> <button class="btn sm" data-web-action="refresh">' + PR.t("刷新模型列表") + '</button> <button class="btn sm" data-web-action="close">' + PR.t("关闭网页") + '</button>' +
-          (s.webStatus && s.webStatus.pending ? ' <button class="btn sm" data-web-action="clear">' + PR.t("核对网页后允许重试") + '</button>' : "") : "") + '</div>' +
+          (s.webStatus && s.webStatus.pending ? ' <button class="btn sm" data-web-action="clear">' + PR.t("核对网页后允许重试") + '</button>' : "") +
+          (s.webStatus?.translationSessions || []).map(session => '<p class="hint">' + PR.esc(session.paper_id || session.key) + ' · ' +
+            PR.esc(String(session.requests)) + ' / ' + PR.esc(String(session.pages)) + ' <button class="btn sm" data-web-action="rotate" data-web-session="' + PR.esc(session.key) + '">' +
+            (session.rotate_next ? PR.t("已安排下次使用新会话") : PR.t("下次翻译使用新会话")) + '</button></p>').join('') +
+          (s.webStatus?.resourceState?.error ? '<p class="hint">' + PR.esc(s.webStatus.resourceState.error) + '</p>' : '') : "") + '</div>' +
         cardsHtml(s) + (s.editing ? formHtml(s) : "") +
         '<div class="settings-sec">' + translationHtml(s) + "</div>" +
         '<p class="hint" style="margin-top:14px">' + PR.t("文献库位置：{path}", { path: PR.esc(s.cfg.library_dir) }) + "</p>";
@@ -257,6 +276,7 @@
           if (webAction.dataset.webAction === "open") await window.easyreadDesktop.chatgptOpen();
           if (webAction.dataset.webAction === "close") await window.easyreadDesktop.chatgptClose();
           if (webAction.dataset.webAction === "clear") await window.easyreadDesktop.chatgptClearPending();
+          if (webAction.dataset.webAction === "rotate") await window.easyreadDesktop.chatgptRotate(webAction.dataset.webSession);
           if (webAction.dataset.webAction === "refresh") {
             s.webModels = await window.easyreadDesktop.chatgptModels(); s.webModelsError = "";
             if (s.form && s.form.kind === "chatgpt_web" && !s.form.model) s.form.model = (s.webModels.models[0] || {}).name || "";

@@ -90,6 +90,31 @@ class ChatGPTWebBridgeTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIsNone(chatgpt_web.next_task()["request"])
 
+    def test_chat_sends_text_and_project_reference_without_creating_attachments(self):
+        result = []
+        prompt = "读者选中的原话：important\n读者现在问：这段是什么意思？"
+        worker = threading.Thread(target=lambda: result.extend(chatgpt_web.stream(
+            {"model": "Selected GPT", "project_sync": True}, prompt, self.root,
+            images=[self.root / "source.pdf"], session="paper/chat/one")))
+        worker.start()
+        deadline = time.monotonic() + 3
+        while not chatgpt_web._active and time.monotonic() < deadline:
+            time.sleep(0.01)
+        request = chatgpt_web.next_task()["request"]
+        self.assertEqual(request["kind"], "chat")
+        self.assertEqual(request["files"], [])
+        self.assertEqual(request["marks_rev"], "")
+        self.assertIn("Example", request["prompt"])
+        self.assertIn("项目中", request["prompt"])
+        self.assertIn("找不到或无法读取", request["prompt"])
+        self.assertTrue(request["prompt"].endswith(prompt))
+        self.assertFalse((self.root / "web-attachments").exists())
+        self.assertNotIn("task_id", request)
+        chatgpt_web.event({"id": request["id"], "seq": 1, "text": "解释", "done": True})
+        worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, ["解释"])
+
     def test_bridge_requires_desktop_secret(self):
         handler_app = mock.patch.object(Handler, "app", SimpleNamespace(), create=True)
         handler_app.start()

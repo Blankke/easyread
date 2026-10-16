@@ -1317,5 +1317,18 @@
  "图表名称": "Figure or table name",
  "点击展开或收起": "Click to expand or collapse",
  "修改名称：{name}": "Rename {name}",
- "修改图表名称": "Rename figure or table"
+ "修改图表名称": "Rename figure or table",
+ "网页结果交付": "Web result delivery",
+ "正文 JSON（稳定选项）": "JSON in reply (stable)",
+ "JSON 文件（实验性）": "JSON file (experimental)",
+ "优先文件，完整正文可回退": "Prefer file, accept complete JSON reply",
+ "文件模式每批页数": "Pages per file batch",
+ "每会话最多翻译请求": "Translation requests per conversation",
+ "每会话累计页数阈值": "Page threshold per conversation",
+ "历史消息阈值（0 为关闭）": "Message threshold (0 to disable)",
+ "项目文件数量上限": "Project file count limit",
+ "自动轮换翻译会话": "Rotate translation conversations automatically",
+ "同步共享术语库到项目（实验性）": "Sync shared glossary to project (experimental)",
+ "下次翻译使用新会话": "Use a new conversation next time",
+ "已安排下次使用新会话": "New conversation scheduled"
 }

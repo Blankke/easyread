@@ -8,6 +8,9 @@ const { createHash } = require("crypto");
 const { PROJECT_NAME, INSTRUCTIONS, projectPage, mergeInstructions } = require("./chatgpt-project.cjs");
 
 const { readAnswer, createAnswerGate } = require("./chatgpt-answer.cjs");
+const { artifactLink, artifactPath, readArtifact, validateArtifact, createArtifactCollector } = require('./chatgpt-artifacts.cjs');
+const { shouldRotate, nextSession, completeSession, atomicJSON, pendingRecord, releasePending } = require('./chatgpt-sessions.cjs');
+const { syncGlossary, projectFilesPage } = require('./chatgpt-resources.cjs');
 
 const URL_HOME = "https://chatgpt.com/";
 const CLOSE_URL = "https://easyread.invalid/close-chatgpt";
@@ -15,6 +18,30 @@ const TOOLBAR_HEIGHT = 44;
 const GRIP_WIDTH = 10;
 const COLLAPSE_WIDTH = 160;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// 使用执行网页所属的 Chromium 会话，沿用其 Cookie 和网络配置，避开网页对 fetch 的包装。
+// 只提取稳定用户 ID；不持久化、打印或转发完整账号资料及令牌。
+async function readAccountId(browserSession) {
+  let response;
+  try {
+    response = await browserSession.fetch(URL_HOME + 'api/auth/session', {
+      credentials: 'include', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15000),
+    });
+  } catch (error) {
+    throw new Error(`ChatGPT 账号接口连接失败：${String(error.message).split('\n')[0]}`);
+  }
+  if (response.status === 401) return '';
+  if (!response.ok) throw new Error(`ChatGPT 账号接口暂不可用（HTTP ${response.status}）`);
+  let session;
+  try { session = await response.json(); }
+  catch (_) { throw new Error('ChatGPT 账号接口未返回有效数据，请检查网页验证或网络连接'); }
+  if (!session || typeof session !== 'object' || Array.isArray(session))
+    throw new Error('ChatGPT 账号接口返回的数据格式异常');
+  if (typeof session.user?.id === 'string' && session.user.id) return session.user.id;
+  // 空会话代表未登录；残缺的用户资料应报告读取失败，不能要求正常登录的用户反复登录。
+  if (session.user || session.error) throw new Error('ChatGPT 账号接口未返回完整用户信息');
+  return '';
+}
 
 // 项目聊天地址可能带项目名 slug；必须匹配项目 ID，普通 /c/ 会话不能用于翻译。
 function inProject(url, projectURL, conversation = false) {
@@ -130,6 +157,16 @@ function composerSend(action) {
   return { found: true, ready, x: rect.left + Math.min(4, rect.width / 2), y: rect.top + rect.height / 2 };
 }
 
+// 纯文字问答只要求可编辑输入框；附件入口缺失或被禁用不会阻止提问。
+function composerReady() {
+  const host = document.querySelector('[data-testid="prompt-textarea"],#prompt-textarea,[contenteditable="true"][role="textbox"]');
+  const box = host?.matches('textarea,[contenteditable="true"]') ? host : host?.querySelector('textarea,[contenteditable="true"]');
+  if (!box) return { ready: false, loading: false };
+  const rect = box.getBoundingClientRect();
+  const enabled = !box.disabled && !box.readOnly && box.getAttribute('aria-disabled') !== 'true';
+  return { ready: enabled && rect.width > 0 && rect.height > 0, loading: !enabled };
+}
+
 // 富文本编辑器可能把换行拆成多个段落；核对非空白字符，确保正文完整且不会因排版差异误报。
 function promptMatches(text) {
   const host = document.querySelector('[data-testid="prompt-textarea"], #prompt-textarea, [contenteditable="true"][role="textbox"]');
@@ -163,6 +200,14 @@ function composerAttachments(action, name = "") {
   if (!root) return { attached: false, input: false, removed: 0 };
   const buttons = [...root.querySelectorAll('button')];
   const label = el => el.getAttribute('aria-label') || el.innerText || '';
+  const inputs = [...root.querySelectorAll('input[type="file"]')];
+  const opener = buttons.find(el => /添加文件等内容|添加附件|添加照片和文件|attach files|add photos.*files/i.test(label(el)) ||
+    el.getAttribute('data-testid') === 'composer-plus-btn');
+  if (action === 'ready') {
+    // 历史消息已出现时，编辑区仍可能在恢复远端状态；禁用的上传入口不能视为入口缺失。
+    return { ready: inputs.some(el => !el.disabled) || !!opener && !opener.disabled && opener.getAttribute('aria-disabled') !== 'true',
+      loading: !!opener?.disabled || inputs.length > 0 && inputs.every(el => el.disabled) };
+  }
   const removers = buttons.filter(el => /^(remove|移除|删除)\s*/i.test(label(el)));
   if (action === "clear") {
     for (const button of removers) button.click();
@@ -170,7 +215,6 @@ function composerAttachments(action, name = "") {
   }
   const attached = removers.some(el => label(el).includes(name));
   if (action === "input") {
-    const inputs = [...root.querySelectorAll('input[type="file"]')];
     const ext = name.slice(name.lastIndexOf('.')).toLowerCase();
     const mime = { '.pdf': 'application/pdf', '.txt': 'text/plain', '.png': 'image/png', '.jpg': 'image/jpeg',
       '.jpeg': 'image/jpeg', '.webp': 'image/webp' }[ext] || '';
@@ -184,9 +228,7 @@ function composerAttachments(action, name = "") {
     return { attached, input: !!input };
   }
   if (action === "open") {
-    const button = buttons.find(el => /添加文件等内容|添加附件|添加照片和文件|attach files|add photos.*files/i.test(label(el)) ||
-      el.getAttribute('data-testid') === 'composer-plus-btn');
-    button?.click();
+    if (opener && !opener.disabled && opener.getAttribute('aria-expanded') !== 'true') opener.click();
   }
   return { attached };
 }
@@ -223,6 +265,7 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
   const view = new WebContentsView({ webPreferences: { partition, sandbox: true, contextIsolation: true,
     nodeIntegration: false, backgroundThrottling: false } });
   const wc = view.webContents;
+  const artifacts = createArtifactCollector(wc);
   // 独立工具栏始终在 ChatGPT 网页上方，避免网页覆盖 EasyRead 的关闭入口。
   const toolbar = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
   const toolbarWC = toolbar.webContents;
@@ -270,8 +313,13 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
     if (Number.isFinite(saved.fraction) && saved.fraction > 0 && saved.fraction < 1) paneFraction = saved.fraction;
   } catch (_) { /* 首次启动使用默认宽度。 */ }
   let sessions = {};
-  try { sessions = JSON.parse(fs.readFileSync(stateFile, "utf8")); } catch (_) { sessions = {}; }
-  if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) sessions = {};
+  let stateLoadError = '';
+  try { sessions = JSON.parse(fs.readFileSync(stateFile, "utf8")); }
+  catch (error) { if (error.code !== 'ENOENT') stateLoadError = '网页会话记录无法读取，请恢复备份后再继续，避免重复发送'; }
+  if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) {
+    sessions = {};
+    stateLoadError = '网页会话记录格式损坏，请恢复备份后再继续';
+  }
   let project = {};
   try { project = JSON.parse(fs.readFileSync(projectFile, "utf8")); } catch (_) { project = {}; }
   if (!project || typeof project !== "object" || Array.isArray(project)) project = {};
@@ -284,6 +332,7 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
   let projectSetupPromise = null;
   let projectVerifiedThisRun = false;
   let projectState = "idle";
+  let resourceState = { status: 'disabled' };
   let phase = "idle";
   let modelsPromise = null;
   let initialLoadPromise = null;
@@ -292,6 +341,7 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
   let dismissingMenu = false;
   let networkTraceAttached = false;
   let submissionObservation = null;
+  let recoveryReloaded = false;
   const uploadRequests = new Set();
   let uploadActivity = 0;
   let dragStartWidth = null;
@@ -302,7 +352,10 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
   let previewGeneration = 0;
   let disposed = false;
   let traceStarted = 0, tracePrevious = 0;
+  let taskMetrics = {};
   const trace = stage => {
+    const instant = performance.now();
+    taskMetrics[stage] = Math.round(instant - traceStarted);
     if (process.env.EASYREAD_WEB_TRACE === "1") {
       const now = performance.now();
       console.warn("ChatGPT 网页阶段", JSON.stringify({ stage,
@@ -312,12 +365,11 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
   };
 
   function save() {
-    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify(sessions), "utf8");
+    if (stateLoadError) throw new Error(stateLoadError);
+    atomicJSON(stateFile, sessions);
   }
   function saveProject() {
-    fs.mkdirSync(path.dirname(projectFile), { recursive: true });
-    fs.writeFileSync(projectFile, JSON.stringify(project), "utf8");
+    atomicJSON(projectFile, project);
   }
 
   // 宽度按窗口比例保存；拖到右边缘并松开时收起侧栏。
@@ -428,6 +480,7 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
   function dispose() {
     if (disposed) return;
     disposed = true;
+    artifacts.close();
     previewGeneration++;
     clearTimeout(previewTimer);
     ipcMain.removeListener("easyread:chatgpt-pane-drag", onGripDrag);
@@ -459,7 +512,7 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
       const target = new URL(url);
       console.warn("ChatGPT 网页新窗口", JSON.stringify({ protocol: target.protocol, host: target.hostname, path: target.pathname.slice(0, 120) }));
     }
-    if (!permittedHost(url)) return { action: "deny" };
+    if (!permittedHost(url) && !artifacts.permitsPopup(url)) return { action: "deny" };
     return { action: "allow", overrideBrowserWindowOptions: {
       webPreferences: { partition, sandbox: true, contextIsolation: true, nodeIntegration: false },
     } };
@@ -497,7 +550,12 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
         reject(new Error("ChatGPT 网页导航超时，请检查网络连接后重试"));
       }, 45000);
     });
-    const completed = Promise.race([wc.loadURL(url), ready, expired]).then(() => true);
+    const navigation = wc.loadURL(url).catch(error => {
+      // ChatGPT 客户端重定向会中止原 loadURL；仍等 DOM，并由调用方核对项目/会话归属。
+      if (error.code === 'ERR_ABORTED' || error.errno === -3) return ready;
+      throw error;
+    });
+    const completed = Promise.race([navigation, ready, expired]).then(() => true);
     try {
       while (!await Promise.race([completed, sleep(250).then(() => false)])) await pulse();
     } catch (error) { wc.stop?.(); throw error; }
@@ -534,7 +592,7 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
               /\/conversation(?:$|\/turn$)/.test(pathname)) {
             submissionObservation.dispatched = true;
             const current = sessions[activeSession]?.pending;
-            if (current) { current.transport = 'dispatched'; save(); }
+            if (current) { current.transport = 'dispatched'; taskMetrics.requests_sent = 1; save(); }
           }
           if (process.env.EASYREAD_WEB_TRACE !== '1') return;
           if (params.request.method === "POST" && /^\/backend-api\/(?:f\/)?(?:conversation|files)(?:\/|$)/.test(pathname)) {
@@ -591,35 +649,57 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
     if (running && cancelled && phase !== "answer") throw new Error("已停止");
   }
   async function signedIn() {
-    await ensureLoaded();
-    return evalPage(`() => !!document.querySelector('[data-testid="prompt-textarea"], #prompt-textarea, [contenteditable="true"][role="textbox"]')`);
-  }
-  async function waitForLogin() {
-    // 后台任务保持 EasyRead 原界面；认证页只由用户主动打开。
-    for (let i = 0; i < 120; i++) {
-      if (cancelled) throw new Error("已停止");
-      if (await signedIn().catch(() => false)) return;
-      await sleep(250);
-    }
-    throw new Error("ChatGPT 需要登录或验证；请在 EasyRead 中主动打开 ChatGPT，完成后重试");
+    return !!await fingerprint();
   }
   async function fingerprint() {
-    // 登录 Cookie 会自动轮换；读取网页自身会话中的稳定用户 ID，仅持久化其哈希。
-    const id = await evalPage(`async () => {
-      const response = await fetch('/api/auth/session', { credentials: 'same-origin', signal: AbortSignal.timeout(15000) });
-      if (!response.ok) return '';
-      const session = await response.json();
-      return typeof session.user?.id === 'string' ? session.user.id : '';
-    }`).catch(() => "");
-    return id ? createHash("sha256").update(id).digest("hex") : "";
+    await ensureLoaded();
+    const url = new URL(wc.getURL());
+    if (url.origin !== new URL(URL_HOME).origin && permittedHost(url.href)) return '';
+    // 等待网络时维持任务心跳与取消响应；结果只在当前核验完成后使用。
+    await pulse();
+    const completed = readAccountId(wc.session).then(id => ({ id }));
+    let outcome;
+    while (!(outcome = await Promise.race([completed, sleep(250).then(() => null)]))) await pulse();
+    await pulse();
+    return outcome.id ? createHash('sha256').update(outcome.id).digest('hex') : '';
   }
-  async function checkAccount() {
-    const now = await fingerprint();
-    if (!now) throw new Error("无法确认 ChatGPT 登录账号，请在内置网页重新登录");
+  async function recoverPage(message) {
+    // 自动刷新只发生在提交前，且一次任务最多一次；待回收回答始终保留在原网页。
+    if (recoveryReloaded || cancelled || submissionObservation?.dispatched ||
+        Object.values(sessions).some(value => value.pending) || !wc.getURL().startsWith(URL_HOME)) return false;
+    recoveryReloaded = true;
+    if (taskReport) await taskReport({ phase, message });
+    await loadPage(wc.getURL());
+    return true;
+  }
+  async function waitForLogin() {
+    // 只重试临时读取故障；明确的空登录会话立即提示，读取失败保留真实原因。
+    for (let i = 0; i < 3; i++) {
+      if (cancelled) throw new Error("已停止");
+      let ready;
+      try { ready = await fingerprint(); }
+      catch (error) {
+        if (cancelled) throw new Error("已停止");
+        if (i === 2) throw new Error(`ChatGPT 登录状态检查失败：${error.message}`);
+        if (i === 0) await recoverPage('网页连接暂不可用，正在刷新后重新核验');
+        await sleep(500 * (i + 1));
+        continue;
+      }
+      if (ready) return ready;
+      throw new Error("ChatGPT 需要登录或验证；请在 EasyRead 中主动打开 ChatGPT，完成后重试");
+    }
+  }
+  async function checkAccount(now = '') {
+    // 网页恢复历史时，账号接口可能短暂超时；在同一登录会话内重读，不能把网络抖动直接判成登出。
+    for (let attempt = 0; attempt < 3 && !now; attempt++) {
+      if (cancelled) throw new Error('已停止');
+      if (attempt) await sleep(500 * attempt);
+      now = await fingerprint().catch(() => '');
+    }
+    if (!now) throw new Error('ChatGPT 账号信息暂时无法读取，请检查网络或网页登录状态后重试');
     if (account && now && account !== now) {
       // 登录状态改变时保留仍需人工核对的发送记录，避免自动重复提交。
-      sessions = Object.fromEntries(Object.entries(sessions).filter(([, value]) => value.pending));
-      save();
+      // 历史会话保留账号归属；切换账号时后续任务新建会话，不能丢掉追溯记录。
       project = { creationAttempts: project.creationAttempts || {} };
       projectVerifiedThisRun = false;
       projectState = "idle";
@@ -628,9 +708,13 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
   }
   async function status() {
     try {
+      if (stateLoadError) throw new Error(stateLoadError);
+      if (!running) reconcileReceived();
       const ready = await signedIn();
       // 状态查询只读；不能在执行中的任务里重置账号或项目缓存。
-      return { ready, visible, running, phase, projectState, pending: Object.values(sessions).filter(x => x.pending).length, error: lastError };
+      return { ready, visible, running, phase, projectState, resourceState, pending: Object.values(sessions).filter(x => x.pending).length, error: lastError,
+        translationSessions: Object.entries(sessions).filter(([, s]) => s.kind === 'translation').map(([key, s]) =>
+          ({ key, paper_id: s.paper_id, url: s.url, requests: s.requests || 0, pages: s.pages || 0, history: s.history || [], rotate_next: !!s.rotate_next })) };
     } catch (error) { return { ready: false, visible, running, phase, projectState, pending: Object.values(sessions).filter(x => x.pending).length, error: error.message }; }
   }
 
@@ -689,8 +773,16 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
   }
 
   async function projectAction(action, value = "") {
-    const result = await evalPage(projectPage.toString(), [action, value]);
+    let result = await evalPage(projectPage.toString(), [action, value]);
+    // 弹层与表单由 React 异步挂载；仅在尚未找到控件时等待，成功点击后不重复触发。
+    const delayed = ['open-settings', 'read-instructions', 'read-memory', 'focus-instructions'];
+    for (let n = 0; result?.error && delayed.includes(action) && n < 40; n++) {
+      await sleep(250);
+      result = await evalPage(projectPage.toString(), [action, value]);
+    }
     if (result?.error) throw new Error(`ChatGPT 项目操作 ${action} 失败：${result.error}`);
+    if (process.env.EASYREAD_WEB_TRACE === '1' && !['find', 'sidebar-ready', 'directory-ready', 'directory-count', 'instructions-saved'].includes(action))
+      console.warn('ChatGPT 项目步骤', action);
     return result;
   }
 
@@ -699,7 +791,12 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
       .some(el => (el.innerText || el.textContent || '').trim() === name)`, [PROJECT_NAME]);
   }
 
-  async function ensureProject() {
+  async function ensureProject({ configure = true } = {}) {
+    // 问答复用已有项目资料，不因指令版本或记忆模式打开设置、切换锁定选项。
+    if (!configure && project.accountId === account && inProject(project.url, project.url)) {
+      projectState = 'ready';
+      return project.url;
+    }
     // 同一账号和指令版本复用成功配置；同一运行中的后续批次不导航回项目首页。
     const instructionsHash = createHash("sha256").update(INSTRUCTIONS).digest("hex");
     const configured = project.accountId === account && project.url?.startsWith(URL_HOME) &&
@@ -747,6 +844,7 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
         if (!found && stableCount < 8) throw new Error("ChatGPT 项目目录仍在更新，请稍后再试");
       }
       if (!found) {
+        if (!configure) throw new Error('未找到“翻译”项目，请先在 ChatGPT 中准备论文所在的项目');
         // 创建回执不确定时等待网页同步；超过五分钟且目录仍查无项目才允许重新提交。
         const lastAttempt = Number(project.creationAttempts?.[account] || 0);
         if (lastAttempt && Date.now() - lastAttempt < 5 * 60 * 1000)
@@ -803,6 +901,12 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
       if (!url.startsWith(URL_HOME) || url === URL_HOME)
         throw new Error("ChatGPT 未提供“翻译”项目地址");
     }
+    if (!configure) {
+      project = { ...project, accountId: account, url };
+      saveProject();
+      projectState = 'ready';
+      return url;
+    }
     if (project.accountId !== account || project.url !== url || project.instructionsHash !== instructionsHash ||
         project.memoryScope !== "project-only") {
       await projectAction("open-settings-menu", PROJECT_NAME);
@@ -824,7 +928,9 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
         const typed = await projectAction("read-instructions");
         if (!typed.opened || typed.text !== wanted) throw new Error("ChatGPT 未接收项目指令");
         await projectAction("save-instructions");
-        await sleep(500);
+        // 保存是异步请求；等待网页退出编辑态，随后重新加载核验持久化结果。
+        for (let i = 0; i < 80 && !await projectAction('instructions-saved'); i++) await sleep(250);
+        if (!await projectAction('instructions-saved')) throw new Error('ChatGPT 项目指令仍在保存，请稍后核对');
         // 重新打开设置核对持久化结果，避免 React 未保存时继续发送论文。
         await loadPage(url);
         for (let i = 0; i < 40 && !await projectHeading(); i++) await sleep(250);
@@ -834,6 +940,10 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
         await projectAction("open-settings");
         await sleep(250);
         state = await projectAction("read-instructions");
+        if (!state.opened) {
+          await sleep(500);
+          state = await projectAction('read-instructions');
+        }
         if (!state.opened || !state.text.includes(INSTRUCTIONS))
           throw new Error("ChatGPT 未确认“翻译”项目指令已保存");
       }
@@ -877,7 +987,8 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
   async function attach(file) {
     // 通过 Chromium 的文件控件上传；路径只来自后端已验证的论文目录。
     const name = path.basename(file);
-    for (let n = 0; n < 12; n++) {
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
       const shown = await evalPage(composerAttachments.toString(), ["input", name]);
       if (shown.attached) return;
       let ready = shown.input;
@@ -898,11 +1009,89 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
           if ((await evalPage(composerAttachments.toString(), ["state", name])).attached) return;
           await sleep(500);
         }
-        throw new Error(`附件未确认上传完成：${name}`);
+        throw Object.assign(new Error(`附件未确认上传完成：${name}`), { code: 'WEB_ATTACHMENT_NOT_READY' });
       }
       await sleep(250);
     }
-    throw new Error("找不到 ChatGPT 附件入口，请打开网页检查");
+    throw Object.assign(new Error('ChatGPT 附件入口持续不可用，请检查网页提示'), { code: 'WEB_ATTACHMENT_NOT_READY' });
+  }
+
+  async function waitForComposer(needsAttachments = true) {
+    const started = Date.now(), deadline = started + (needsAttachments ? 60000 : 30000);
+    let state;
+    while (Date.now() < deadline) {
+      state = await evalPage(needsAttachments ? composerAttachments.toString() : composerReady.toString(), ['ready']);
+      if (state?.ready) return;
+      if (Date.now() - started >= 5000) await recoverPage('项目编辑区尚未就绪，正在刷新原页面');
+      await sleep(500);
+    }
+    throw Object.assign(new Error(needsAttachments ? (state?.loading ? 'ChatGPT 编辑区仍在加载，附件上传暂不可用' :
+      'ChatGPT 编辑区未就绪，无法开始上传附件') : 'ChatGPT 项目输入框仍不可用，请检查项目访问权限或网络连接'),
+      { code: needsAttachments ? 'WEB_ATTACHMENT_NOT_READY' : 'WEB_COMPOSER_NOT_READY' });
+  }
+
+  async function syncProjectResources(req, projectURL, report) {
+    if (req.kind === 'chat' || !req.options?.project_sync || !req.requested_pages) return;
+    phase = 'project-sync';
+    await report({ phase });
+    const action = async (name, value) => {
+      const deadline = Date.now() + 60000;
+      let result;
+      do {
+        result = await evalPage(projectFilesPage.toString(), [name, value]);
+        if (!result?.error) return result;
+        if (!result.retryable) break;
+        await sleep(500);
+      } while (Date.now() < deadline);
+      throw new Error(result.error);
+    };
+    try {
+      await loadPage(projectURL);
+      await action('open');
+      await sleep(500);
+      resourceState = await syncGlossary({ userData: app.getPath('userData'), account, projectURL, cwd: req.cwd,
+        limit: Math.max(1, Math.min(40, Number(req.options.project_file_limit) || 5)),
+        adapter: {
+          list: () => action('list'),
+          upload: async (file, name) => {
+            await action('input');
+            await prepareBackgroundInput();
+            const root = await wc.debugger.sendCommand('DOM.getDocument');
+            const node = await wc.debugger.sendCommand('DOM.querySelector', { nodeId: root.root.nodeId, selector: '[data-easyread-project-upload="true"]' });
+            if (!node.nodeId) throw new Error('项目上传控件不可用');
+            await wc.debugger.sendCommand('DOM.setFileInputFiles', { nodeId: node.nodeId, files: [file] });
+            for (let n = 0; n < 60; n++) {
+              await sleep(500);
+              const files = await action('list');
+              if (files.some(x => x.name === name && !x.busy) && !uploadRequests.size) return;
+            }
+            throw new Error('项目文件上传超时，已改用会话附件');
+          },
+          remove: async (id, name) => {
+            await action('remove', { id, name });
+            for (let attempt = 0; attempt < 60; attempt++) {
+              await sleep(500);
+              await action('confirm-remove', { id, name });
+              const files = await action('list');
+              if (!files.some(file => file.id === id && file.name === name)) return;
+            }
+            throw new Error('旧项目资料删除尚未确认');
+          },
+        } });
+    } catch (error) { resourceState = { status: 'fallback', error: error.message }; }
+    if (resourceState.status === 'fallback' && process.env.EASYREAD_WEB_TRACE === '1') {
+      const snapshot = await evalPage(`() => [...document.querySelectorAll('[role="tabpanel"]')]
+        .filter(el => el.getBoundingClientRect().width > 0).map(el => ({
+          controls:[...el.querySelectorAll('button,[role="button"]')].map(button => ({
+            label:(button.getAttribute('aria-label') || button.textContent || '').trim().slice(0,160),
+            attrs:[...button.attributes].filter(a=>a.name.startsWith('data-')).map(a=>[a.name,a.value.slice(0,160)])})),
+          structure:el.outerHTML.replace(/<svg[\\s\\S]*?<\\/svg>/g,'').slice(0,18000)
+        }))`).catch(() => []);
+      console.warn('ChatGPT 项目资料诊断', JSON.stringify({ error: resourceState.error, snapshot }));
+    }
+    // 从项目首页继续，不让资料面板遮挡输入框。完整本地术语上下文仍由会话附件提供。
+    await loadPage(projectURL);
+    await report({ phase: 'project-sync', resource_status: resourceState.status, resource_error: resourceState.error || '' });
   }
 
   async function fillAndSend(prompt, onSending) {
@@ -966,8 +1155,22 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
       if (state.ready && !uploadRequests.size && Date.now() - uploadActivity >= 500) { target = state; break; }
       await sleep(500);
     }
-    if (!target) throw new Error(found ? "ChatGPT 发送按钮持续不可用，请检查附件上传或网页提示" :
-      "找不到 ChatGPT 发送按钮，请打开网页检查编辑区");
+    if (!target) {
+      const diagnostics = await evalPage(`() => ({
+        notices: [...document.querySelectorAll('[role="alert"],[role="status"],[data-sonner-toast]')]
+          .map(el => (el.innerText || '').trim().slice(0, 200)).filter(Boolean).slice(0, 5),
+        attachments: [...document.querySelectorAll('form button[aria-label]')]
+          .filter(el => /remove|移除|删除/i.test(el.getAttribute('aria-label')))
+          .map(el => el.getAttribute('aria-label').slice(0, 120)).slice(0, 20),
+      })`).catch(() => ({}));
+      const button = await evalPage(composerSend.toString());
+      console.warn('ChatGPT 发送等待超时', JSON.stringify({ button,
+        pendingUploads: uploadRequests.size, ...diagnostics }));
+      const reason = button.ready && uploadRequests.size ? 'ChatGPT 附件处理等待超时' :
+        found ? 'ChatGPT 发送按钮持续不可用' : '找不到 ChatGPT 发送按钮';
+      const notice = diagnostics.notices?.join('；');
+      throw new Error(reason + (notice ? `：${notice}` : '，请检查附件上传或网页提示'));
+    }
     // 编辑区可能在附件处理完成时重绘；重新核对后直接触发网页自己的发送控件。
     target = await evalPage(composerSend.toString());
     if (!target.ready) throw new Error("发送按钮状态已变化，请检查附件上传或网页提示");
@@ -990,7 +1193,7 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
       console.warn("ChatGPT 发送控件", JSON.stringify(hit));
 
     }
-    onSending(beforeUsers);
+    await onSending(beforeUsers);
     submissionObservation = { dispatched: false };
     await evalPage(composerSend.toString(), ['submit']);
     // 新用户消息或草稿清空才视为已提交；不确定时保留待核对记录。
@@ -1013,6 +1216,7 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
       // 先终止当前页面的异步提交链，再确认未发出模型请求，防止迟到提交与重试重叠。
       await loadPage(wc.getURL());
       if (!submissionObservation.dispatched) {
+        releasePending(sessions[activeSession]?.pending, 'not-submitted');
         delete sessions[activeSession]?.pending;
         save();
         throw new Error('ChatGPT 未提交本次问题，网页已自动重置；可直接重试');
@@ -1043,8 +1247,7 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
         const state = await answerState(false).catch(() => null);
         quiet = state && !state.busy ? quiet + 1 : 0;
         if (quiet >= 8) {
-          delete sessions[activeSession]?.pending;
-          save();
+          // 停止生成不证明没有已完成附件；保留原任务，重试时先核对并回收。
           break;
         }
       }
@@ -1068,7 +1271,7 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
         // 提取后再次核对版本及完成状态，避免读取期间网页继续生成或替换等长正文。
         const final = await answerState();
         if (cancelled) await stopAnswer();
-        if (final.text && ready(final)) return final;
+        if ((final.text || final.attachments) && ready(final)) return final;
       }
       // evalPage 内统一检查取消与心跳，不额外发送第二套空事件。
       await sleep(state?.complete && !state.busy ? 250 : 500);
@@ -1087,40 +1290,109 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
     throw new Error("ChatGPT 会话历史仍未加载完成，请稍后重试");
   }
 
+  async function deliverAnswer(req, final, beforeCount, report) {
+    if (!req.task_id || req.output_mode === 'text') {
+      await report({ text: final.text, done: true, phase: 'validated', metrics: { ...taskMetrics, completed_ms: Math.round(performance.now() - traceStarted) } });
+      return;
+    }
+    const stage = async value => {
+      phase = value;
+      if (sessions[req.session]?.pending) {
+        sessions[req.session].pending.artifact_status = value;
+        save();
+      }
+      await report({ phase: value, artifact_status: value, metrics: { ...taskMetrics } });
+    };
+    let result;
+    const local = artifactPath(req.cwd, req.task_id);
+    try {
+      if (fs.existsSync(local)) result = { value: readArtifact(local, req), path: local, recovered: true };
+      else {
+        await stage('awaiting-file');
+        const deadline = Date.now() + 20000;
+        let link;
+        while (Date.now() < deadline) {
+          link = await evalPage(`() => { ${pageMessages.toString()} return (${artifactLink.toString()})(pageMessages().answers,
+            ${JSON.stringify(req.task_id)}, ${JSON.stringify(beforeCount)}); }`);
+          if (link?.found) break;
+          await sleep(500);
+        }
+        if (!link?.found) throw new Error('当前回答缺少唯一的任务结果附件；已保留原会话');
+        await stage('file-ready');
+        result = await artifacts.collect({ cwd: req.cwd, task: req, link, report: stage, cancelled: () => cancelled,
+          click: async () => {
+            const clicked = await evalPage(`() => { ${pageMessages.toString()} return (${artifactLink.toString()})(pageMessages().answers,
+              ${JSON.stringify(req.task_id)}, ${JSON.stringify(beforeCount)}, true); }`);
+            if (!clicked?.found || clicked.href !== link.href || clicked.kind !== link.kind) throw new Error('结果下载入口已改变');
+          } });
+      }
+    } catch (error) {
+      if (req.output_mode !== 'auto' || cancelled) throw error;
+      // 只接受同一回答中可严格解析且归属完整的信封，不能因为下载失败再发送一次翻译。
+      const body = final.text.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, '$1');
+      try { result = { value: validateArtifact(JSON.parse(body), req), path: '', fallback: true }; }
+      catch (_) { throw error; }
+      await stage('text-fallback');
+    }
+    if (cancelled) throw new Error('已停止文件回收');
+    await report({ text: JSON.stringify(result.value), done: true, phase: 'validated',
+      artifact_status: result.fallback ? 'text-fallback' : 'validated', artifact_path: result.path,
+      metrics: { ...taskMetrics, completed_ms: Math.round(performance.now() - traceStarted) },
+      project_url: sessions[req.session]?.projectURL, conversation_url: sessions[req.session]?.url });
+  }
+
   async function execute(req, emit) {
     if (running) throw new Error("ChatGPT 网页正在处理另一项任务");
     running = true; activeSession = req.session || ""; cancelled = false; lastError = "";
+    recoveryReloaded = false; submissionObservation = null;
     traceStarted = tracePrevious = performance.now();
+    taskMetrics = { requests_sent: 0, recovered: false, requested_pages: req.requested_pages?.length || 0, output_mode: req.output_mode || 'text' };
     syncDisplay();
     let seq = 0;
     let delivery = Promise.resolve();
     const report = data => {
       const event = { id: req.id, seq: ++seq, ...data };
       // 状态查询与任务进度可能同时产生事件；按序发送，避免完成事件被心跳抢先覆盖。
-      delivery = delivery.then(() => emit(event));
+      delivery = delivery.then(async () => {
+        const ack = await emit(event);
+        if (data.done && (ack?.cancelled || ack?.accepted === false || cancelled))
+          throw new Error('后端尚未确认接收结果，保留待回收记录');
+        return ack;
+      });
       return delivery;
     };
     taskReport = report;
     lastPulse = Date.now();
     try {
+      if (stateLoadError) throw new Error(stateLoadError);
       // 全部修改网页的操作串行完成；模型读取和显式配置也必须先结束。
       if (modelsPromise) await modelsPromise.catch(() => {});
       if (projectSetupPromise) await projectSetupPromise;
       phase = "login";
+      if (req.kind === 'chat' && req.files?.length) throw new Error('问 AI 仅接收文字消息，请重启 EasyRead 后重试');
       const fullPrompt = (req.files || []).some(x => path.basename(x).startsWith("marks-"))
         ? `请以本次附上的 marks-${req.marks_rev}.txt 阅读标记为准。\n\n${req.prompt || ""}` : String(req.prompt || "");
       const promptHash = createHash("sha256").update(fullPrompt).digest("hex");
+      reconcileReceived();
       const unresolved = Object.entries(sessions).find(([, value]) => value.pending);
       if (unresolved && (unresolved[0] !== req.session || unresolved[1].pending.promptHash !== promptHash ||
-          !unresolved[1].url?.includes('/c/'))) {
+          !unresolved[1].url?.includes('/c/') || (req.task_id && unresolved[1].pending.task_id !== req.task_id))) {
         const error = new Error("上次网页发送尚未确认；请先打开 ChatGPT 核对回答，再允许重试");
         error.code = "WEB_PENDING";
         throw error;
       }
-      await waitForLogin();
-      await checkAccount();
+      // 已下载文件可离线恢复；任务信封和后端本地指纹独立核验，不需要再次生成。
+      if (unresolved && req.task_id && req.output_mode !== 'text' && fs.existsSync(artifactPath(req.cwd, req.task_id))) {
+        taskMetrics.recovered = true;
+        await deliverAnswer(req, { text: '' }, unresolved[1].pending.beforeAnswers, report);
+        sessions[req.session] = completeSession(unresolved[1], unresolved[1].pending.beforeAnswers + 1);
+        save();
+        return;
+      }
+      await checkAccount(await waitForLogin());
       trace("account-ready");
       if (unresolved) {
+        taskMetrics.recovered = true;
         const [key, old] = unresolved;
         // 同一批次重试时先从原会话回收已完成的回答，绝不重新发送一遍。
         if (key === req.session && old.accountId === account && old.pending.promptHash === promptHash &&
@@ -1135,9 +1407,9 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
           trace("answer-ready");
           if (!old.projectURL || !inProject(wc.getURL(), old.projectURL, true))
             throw new Error('网页回答的会话归属尚未确认为“翻译”项目，已保留待确认记录');
-          await report({ text: recovered.text, done: true });
+          await deliverAnswer(req, recovered, old.pending.beforeAnswers, report);
           trace("delivered");
-          delete old.pending;
+          sessions[key] = completeSession(old, recovered.count);
           save();
           return;
         }
@@ -1145,10 +1417,15 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
         error.code = "WEB_PENDING";
         throw error;
       }
-      const saved = sessions[req.session];
+      const previous = sessions[req.session];
       phase = "project";
-      const projectURL = await ensureProject();
+      const projectURL = await ensureProject({ configure: req.kind !== 'chat' });
       trace("project-ready");
+      await syncProjectResources(req, projectURL, report);
+      const rotate = req.kind === 'translation' && shouldRotate(previous, req.options);
+      const incompatible = previous && (previous.accountId !== account || previous.projectURL !== projectURL ||
+        !inProject(previous.url, projectURL, true));
+      const saved = nextSession(previous, rotate || incompatible);
       // 旧版普通会话没有项目归属；新轮次从项目新建会话，并由本地问答历史补足上下文。
       const reuse = saved?.url && saved.accountId === account && saved.projectURL === projectURL &&
         inProject(saved.url, projectURL, true);
@@ -1156,59 +1433,89 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
       if (wc.getURL() !== targetURL) await loadPage(targetURL);
       trace("loaded");
       await waitForLogin();
-      if (!reuse) {
-        // 项目首页会恢复上一次草稿；新会话必须从空附件开始，防止误用其他论文或过期上传。
-        let removed = 0;
-        for (let i = 0; i < 20; i++) {
-          removed = (await evalPage(composerAttachments.toString(), ["clear"])).removed;
-          if (!removed) break;
-          await sleep(250);
+      let seenFiles;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          // 登录标记和历史消息比上传控件更早出现，须等待编辑区解除禁用再清草稿、选择附件。
+          await prepareBackgroundInput();
+          await waitForComposer(!!req.files?.length);
+          {
+            // 新任务与失败重试都先清空未发送附件；已提交任务在前面的恢复分支处理，不触碰其草稿。
+            // 复用会话时也可能恢复上轮失败的草稿，不能将旧上下文或未完成上传混入本批。
+            let removed = 0;
+            for (let i = 0; i < 20; i++) {
+              removed = (await evalPage(composerAttachments.toString(), ["clear"])).removed;
+              if (!removed) break;
+              await sleep(250);
+            }
+            if (removed) throw new Error("ChatGPT 旧草稿附件尚未清理完成");
+            // 旧草稿已移除，其网络请求不再参与本批发送门禁；随后上传重新记录。
+            uploadRequests.clear();
+            uploadActivity = 0;
+          }
+          phase = "model";
+          await prepareBackgroundInput();
+          await selectModel(req.model);
+          trace("model-ready");
+          await waitConversation(targetURL);
+          trace("history-ready");
+          if (!inProject(wc.getURL(), projectURL)) throw new Error('网页未处于“翻译”项目，已停止本次发送');
+          // 只有完成交付后才把附件写入会话复用记录，准备阶段不能修改上一批的权威记录。
+          seenFiles = reuse ? { ...saved.files } : {};
+          for (const file of req.files || []) {
+            phase = "attachments";
+            if (cancelled) throw new Error("已停止");
+            if (!fs.existsSync(file) || !fs.realpathSync(file).startsWith(fs.realpathSync(req.cwd) + path.sep)) throw new Error("附件路径不属于当前论文");
+            const version = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+            if (seenFiles[file] === version) continue;
+            await attach(file);
+            seenFiles[file] = version;
+          }
+          break;
+        } catch (error) {
+          if (cancelled || attempt || !['WEB_ATTACHMENT_NOT_READY', 'WEB_COMPOSER_NOT_READY'].includes(error.code)) throw error;
+          // 尚未进入提交阶段，允许重载同一会话并重建整批草稿一次；已提交任务走前面的回收分支。
+          if (!await recoverPage('上传控件暂不可用，正在重新加载原会话')) throw error;
+          await waitForLogin();
         }
-        if (removed) throw new Error("ChatGPT 旧草稿附件尚未清理完成");
-      }
-      phase = "model";
-      await prepareBackgroundInput();
-      await selectModel(req.model);
-      trace("model-ready");
-      await waitConversation(targetURL);
-      trace("history-ready");
-      if (!inProject(wc.getURL(), projectURL)) throw new Error('网页未处于“翻译”项目，已停止本次发送');
-      const seenFiles = reuse ? saved.files || {} : {};
-      for (const file of req.files || []) {
-        phase = "attachments";
-        if (cancelled) throw new Error("已停止");
-        if (!fs.existsSync(file) || !fs.realpathSync(file).startsWith(fs.realpathSync(req.cwd) + path.sep)) throw new Error("附件路径不属于当前论文");
-        const version = file.endsWith(".txt") ? req.marks_rev : String(fs.statSync(file).mtimeMs);
-        if (seenFiles[file] === version) continue;
-        await attach(file);
-        seenFiles[file] = version;
       }
       trace("attachments-ready");
       const before = await answerState(false);
       trace("before-send");
       phase = "sending";
       await fillAndSend(fullPrompt,
-      beforeUsers => {
-        sessions[req.session] = { url: wc.getURL(), accountId: account, projectURL, files: seenFiles,
-          pending: { id: req.id, at: Date.now(), promptHash, beforeUsers, beforeAnswers: before.count } };
+      async beforeUsers => {
+        sessions[req.session] = { ...saved, url: wc.getURL(), accountId: account, projectURL,
+          kind: req.kind, paper_id: req.paper_id || path.basename(req.cwd || ''),
+          requests: (saved.requests || 0) + 1, pages: (saved.pages || 0) + (req.requested_pages?.length || 0),
+          pending: { id: req.id, task_id: req.task_id, source_sha256: req.source_sha256,
+            files: seenFiles,
+            task_record: req.task_record, cwd: req.cwd,
+            requested_pages: req.requested_pages, output_mode: req.output_mode || 'text', model: req.model,
+            at: Date.now(), promptHash, beforeUsers, beforeAnswers: before.count } };
         save();
+        await report({ phase: 'sending', submission_started: true, project_url: projectURL, conversation_url: wc.getURL() });
       });
       trace("after-send");
+      taskMetrics.requests_sent = 1;
+      await report({ phase: 'answer', metrics: { ...taskMetrics } });
       phase = "answer";
       rememberPendingURL();
       const final = await waitForAnswer(before.count);
       trace("answer-ready");
       if (!inProject(wc.getURL(), projectURL, true))
         throw new Error('网页回答的会话归属尚未确认为“翻译”项目，已保留待确认记录');
-      await report({ text: final.text, done: true });
+      await deliverAnswer(req, final, before.count, report);
       trace("delivered");
-      sessions[req.session] = { url: wc.getURL(), accountId: account, projectURL, files: seenFiles };
+      sessions[req.session] = completeSession({ ...sessions[req.session], url: wc.getURL() }, final.count);
       save();
     } catch (error) {
       lastError = error.message;
       if (projectState === "checking") projectState = "error";
       if (!cancelled) {
-        await report({ error: error.message });
+        // 完成事件回传失败时 delivery 已拒绝；仍保留 pending，不让错误汇报掩盖原错误。
+        delivery = delivery.catch(() => {});
+        await report({ error: error.message, metrics: { ...taskMetrics, failed_ms: Math.round(performance.now() - traceStarted) } });
       }
     } finally { submissionObservation = null; taskReport = null; activeSession = ""; running = false; phase = lastError ? "error" : "idle"; if (!disposed) syncDisplay(); }
   }
@@ -1222,12 +1529,39 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
       fs.mkdirSync(path.dirname(backup), { recursive: true });
       fs.writeFileSync(backup, JSON.stringify(unresolved), "utf8");
     }
-    for (const key of Object.keys(unresolved)) delete sessions[key];
+    for (const key of Object.keys(unresolved)) {
+      releasePending(sessions[key].pending, 'user-confirmed-retry');
+      sessions[key] = nextSession({ ...sessions[key], pending: undefined }, true);
+    }
     save();
     lastError = "";
     return { ok: true };
   }
+  function reconcileReceived() {
+    // 完成事件已落盘、HTTP 确认却丢失时，可从后端权威接收记录解除 pending。
+    let changed = false;
+    for (const [key, saved] of Object.entries(sessions)) {
+      const p = saved.pending;
+      if (!p?.task_record || !p.cwd || !p.task_id) continue;
+      try {
+        const { record } = pendingRecord(p);
+        // 正文已接收但结构校验拒绝时，也应释放旧发送状态，允许明确的格式重试。
+        if (!['received', 'rejected'].includes(record.status) || !record.validated_at || !record.text) continue;
+        sessions[key] = completeSession(saved, p.beforeAnswers + 1);
+        changed = true;
+      } catch (_) { /* 无法核实时保留 pending。 */ }
+    }
+    if (changed) save();
+  }
+  function rotateSession(key) {
+    if (running || Object.values(sessions).some(s => s.pending)) throw new Error('请先完成或核对待确认任务，再轮换会话');
+    if (!sessions[key] || sessions[key].kind !== 'translation') throw new Error('找不到该论文的翻译会话');
+    sessions[key].rotate_next = true;
+    save();
+    return { ok: true };
+  }
   function initializeProject({ refresh = false } = {}) {
+    if (stateLoadError) return Promise.resolve({ ready: false, reason: 'state-unreadable', error: stateLoadError });
     if (projectSetupPromise) return projectSetupPromise;
     if (running) return Promise.resolve({ ready: false, reason: "busy" });
     if (!refresh && projectVerifiedThisRun && projectState === "ready")
@@ -1257,11 +1591,26 @@ function createChatGPTWeb({ app, window, BrowserWindow, WebContentsView, ipcMain
     }).finally(() => { projectSetupPromise = null; if (!disposed) syncDisplay(); });
     return projectSetupPromise;
   }
-  return { show, hide, status, models, execute, initializeProject, webContents: wc, inspectAnswer: answerState, clearPending, cancel: () => { cancelled = true; },
+  async function syncResources(cwd, options = {}) {
+    // 独立核验资料同步时不发送翻译；与任务、模型菜单和项目设置共用互斥约束。
+    if (stateLoadError) throw new Error(stateLoadError);
+    if (running || modelsPromise || projectSetupPromise || Object.values(sessions).some(s => s.pending))
+      throw new Error('请先完成当前网页任务，再同步项目资料');
+    if (!fs.existsSync(path.join(cwd, 'paper.json'))) throw new Error('资料同步目录缺少 paper.json');
+    running = true; cancelled = false;
+    try {
+      await waitForLogin();
+      await checkAccount();
+      await syncProjectResources({ cwd, requested_pages: [], options: { ...options, project_sync: true } },
+        await ensureProject(), async () => {});
+      return resourceState;
+    } finally { running = false; phase = 'idle'; if (!disposed) syncDisplay(); }
+  }
+  return { show, hide, status, models, execute, initializeProject, syncResources, webContents: wc, inspectAnswer: answerState, clearPending, rotateSession, cancel: () => { cancelled = true; },
     close: () => {
       hide();
       dispose();
     } };
 }
 
-module.exports = { createChatGPTWeb, modelMenu, composerSend, composerAttachments, promptMatches, pastePrompt, inProject };
+module.exports = { createChatGPTWeb, readAccountId, modelMenu, composerSend, composerReady, composerAttachments, promptMatches, pastePrompt, inProject };

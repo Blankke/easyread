@@ -199,6 +199,7 @@ async function pollWebBridge() {
       }
       if (!ack) throw failure;
       if (ack.cancelled) chatgptWeb.cancel();
+      return ack;
     });
     // 有任务时立即领取下一项；只有空队列或连接失败才退回间隔轮询。
     if (next.request) delay = 0;
@@ -229,6 +230,7 @@ ipcMain.handle("easyread:web-models", async event => { trustedWindow(event); ret
 ipcMain.handle("easyread:web-open", async event => { trustedWindow(event); chatgptWeb.show(); return { ok: true }; });
 ipcMain.handle("easyread:web-close", async event => { trustedWindow(event); chatgptWeb.hide(); return { ok: true }; });
 ipcMain.handle("easyread:web-clear-pending", async event => { trustedWindow(event); return chatgptWeb.clearPending(); });
+ipcMain.handle("easyread:web-rotate", async (event, key) => { trustedWindow(event); return chatgptWeb.rotateSession(key); });
 
 async function stopBackendGracefully() {
   const child = backend;

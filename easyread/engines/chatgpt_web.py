@@ -18,6 +18,7 @@ from uuid import uuid4
 from ..app.i18n import tr
 from ..library.store import read_json, write_json_atomic
 from .engines import Cancelled, EngineError
+from . import web_translation
 
 SECRET = os.environ.get("EASYREAD_WEB_BRIDGE_SECRET", "")
 _pending: queue.PriorityQueue = queue.PriorityQueue()
@@ -65,6 +66,39 @@ def event(body: dict) -> dict:
             return {"accepted": False, "cancelled": task["cancel"].is_set()}
         # 同一请求的序号核对和入队必须原子化，避免 HTTP 重试与迟到回包交错。
         part = str(body.get("text") or "")
+        durable = task.get("durable")
+        if durable:
+            if not Path(task["request"]["cwd"]).is_dir():
+                return {"accepted": False, "cancelled": True}
+            record, record_path = durable
+            released = read_json(record_path)
+            if released.get("task_id") == record["task_id"] and released.get("release_reason"):
+                record.update({key: released[key] for key in ("status", "release_reason", "released_at")})
+            if body.get("done") and record["output_mode"] != "text":
+                try:
+                    # Electron 已验证一次，后端仍独立核对；失败不确认完成，不写回答缓存。
+                    if len(part.encode("utf-8")) > web_translation.MAX_BYTES:
+                        raise ValueError("结果文件超过大小限制")
+                    result = web_translation.validate(json.loads(part), record)
+                    part = json.dumps(result, ensure_ascii=False)
+                    body = {**body, "text": part}
+                except (ValueError, TypeError) as error:
+                    task["events"].put({"error": str(error)})
+                    return {"accepted": False, "cancelled": True}
+            for key in ("phase", "artifact_path", "artifact_status", "project_url", "conversation_url", "metrics", "resource_status", "resource_error", "submission_started"):
+                if key in body:
+                    record[key] = body[key]
+            if body.get("metrics"):
+                # 同次执行的阶段事件覆盖其指标；重启回收追加执行记录，不抹掉原请求开销。
+                record.setdefault("metric_runs", {})[rid] = body["metrics"]
+            if body.get("done"):
+                record.update(status="received", validated_at=web_translation.now_iso(), text=task["answer"] + part)
+                record.pop("error", None)
+            elif body.get("error") and record.get("status") not in ("received", "rejected"):
+                record.update(status="pending", error=str(body["error"])[:500])
+            elif body.get("submission_started"):
+                record["status"] = "pending"
+            write_json_atomic(record_path, record)
         if body.get("done") and task["checkpoint"]:
             # 先原子落盘完整网页回答，再确认完成事件；此刻退出也能从本地继续解析。
             if not Path(task["request"]["cwd"]).exists():
@@ -115,6 +149,9 @@ def _notes(ws) -> tuple[str, str]:
 def _prepare(cwd: Path, kind: str, images: list[Path] | None) -> tuple[list[str], str]:
     from ..library.store import Workspace
 
+    # 问答上下文由消息正文承载；不读取 PDF、不生成笔记附件，也不进入上传流程。
+    if kind == "chat":
+        return [], ""
     # 引擎既可能在论文目录运行，也可能在临时目录用于“试译一句”。
     if not (cwd / "paper.json").is_file():
         return [], ""
@@ -134,6 +171,17 @@ def _prepare(cwd: Path, kind: str, images: list[Path] | None) -> tuple[list[str]
     return attachments, rev
 
 
+def _project_reference(cwd: Path) -> str:
+    """为纯文字问答标明项目中应检索的论文，文件名相同时用题名和内容核对。"""
+    paper = read_json(cwd / "paper.json", {}) or {}
+    meta = paper.get("meta") or {}
+    identity = {key: meta[key] for key in ("title_en", "title_zh", "authors", "source", "source_sha256") if meta.get(key)}
+    return ("本次为论文问答。优先检索当前 ChatGPT 项目中与下列题名、来源及内容一致的已有论文原本。"  # i18n-ok 提示词
+            "同名 source.pdf 不能单独作为归属依据；不要混用其他论文。"  # i18n-ok
+            "如果项目中找不到或无法读取对应原文，就依据本条消息的引用和段落回答，明确依据范围。\n"  # i18n-ok
+            + "论文标识：" + json.dumps(identity, ensure_ascii=False) + "\n\n")  # i18n-ok
+
+
 def _checkpoint(cwd: Path, kind: str, prompt: str, model: str, session: str,
                 files: list[str], rev: str) -> Path | None:
     """每次网页翻译用提示词、模型和附件版本定位回答快照。"""
@@ -151,6 +199,15 @@ def discard(cfg: dict, prompt: str, cwd: Path, images: list[Path] | None = None,
     """网页回答格式无效时丢弃该批快照，让下一次请求可以重新生成。"""
     cwd = cwd.resolve()
     files, rev = _prepare(cwd, kind, images)
+    if cfg.get("requested_pages"):
+        # 使用本轮实际消费的记录；读者在生成期间改笔记不能让拒绝落到另一个任务。
+        actual = cfg.get("_task_record")
+        prepared = (read_json(actual), Path(actual)) if actual else web_translation.prepare(
+            cwd, cfg, prompt, files, session or f"{cwd}/{kind}")
+        if prepared:
+            record, record_path = prepared
+            record.update(status="rejected")
+            write_json_atomic(record_path, record)
     checkpoint = _checkpoint(cwd, kind, prompt, cfg.get("model") or "", session or f"{cwd}/{kind}", files, rev)
     if checkpoint:
         checkpoint.unlink(missing_ok=True)
@@ -164,9 +221,21 @@ def stream(cfg: dict, prompt: str, cwd: Path, cancel: threading.Event | None = N
     stop = cancel or threading.Event()
     if stop.is_set() or not cwd.exists():
         raise Cancelled()
+    if kind == "chat":
+        prompt = _project_reference(cwd) + prompt
     files, rev = _prepare(cwd, kind, images)
     session = session or f"{cwd}/{kind}"
     checkpoint = _checkpoint(cwd, kind, prompt, cfg.get("model") or "", session, files, rev)
+    durable = web_translation.prepare(cwd, cfg, prompt, files, session) if kind == "translation" else None
+    if durable:
+        # 新协议缓存按持久化任务 ID 定位，避免文件模式误读旧文本模式回答。
+        checkpoint = cwd / "web-answers" / f"{durable[0]['task_id']}.json"
+    if durable:
+        record, record_path = durable
+        cfg["_task_record"] = str(record_path)
+        if record.get("text") and record.get("status") == "received":
+            yield record["text"]
+            return
     try:
         saved = read_json(checkpoint) if checkpoint and checkpoint.is_file() else None
     except (ValueError, OSError):
@@ -191,6 +260,15 @@ def stream(cfg: dict, prompt: str, cwd: Path, cancel: threading.Event | None = N
                          "prompt": prompt, "cwd": str(cwd), "session": session,
                          "files": files, "marks_rev": rev},
              "events": queue.Queue(), "cancel": stop, "seq": 0, "answer": "", "checkpoint": checkpoint}
+    entry["durable"] = durable
+    entry["request"]["options"] = {key: cfg[key] for key in (
+        "rotate_enabled", "rotate_requests", "rotate_pages", "rotate_messages", "project_sync", "project_file_limit"
+    ) if key in cfg}
+    if durable:
+        entry["request"]["task_record"] = str(record_path)
+        entry["request"].update({key: record[key] for key in (
+            "protocol", "task_id", "paper_id", "source_sha256", "requested_pages", "output_mode", "model", "prompt", "files", "marks_rev", "read_only"
+        )})
     with _lock:
         _active[rid] = entry
         _order += 1
@@ -211,6 +289,8 @@ def stream(cfg: dict, prompt: str, cwd: Path, cancel: threading.Event | None = N
                     raise EngineError(tr("等待 ChatGPT 网页回复超时"))
                 continue
             last = time.monotonic()
+            if item.get("phase") and callable(cfg.get("progress")):
+                cfg["progress"](item["phase"])
             if item.get("error"):
                 raise EngineError(str(item["error"])[:500])
             if item.get("text"):

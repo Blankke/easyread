@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("easyreadDesktop", {
   chatgptOpen: () => ipcRenderer.invoke("easyread:web-open"),
   chatgptClose: () => ipcRenderer.invoke("easyread:web-close"),
   chatgptClearPending: () => ipcRenderer.invoke("easyread:web-clear-pending"),
+  chatgptRotate: key => ipcRenderer.invoke("easyread:web-rotate", key),
   updateState: () => ipcRenderer.invoke("easyread:update-state"),
   downloadUpdate: () => ipcRenderer.invoke("easyread:update-download"),
   installUpdate: () => ipcRenderer.invoke("easyread:update-install"),

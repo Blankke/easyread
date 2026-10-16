@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "node scripts/dev_desktop.cjs",
     "start": "node scripts/dev_desktop.cjs",
-    "test:web": "node --test tests/desktop/test_chatgpt_answer.cjs tests/desktop/test_chatgpt_web.cjs tests/web/test_web_browser_nav.cjs tests/web/test_chat_ui.cjs",
+    "test:web": "node --test tests/desktop/test_chatgpt*.cjs tests/web/test_web_browser_nav.cjs tests/web/test_chat_ui.cjs tests/web/test_web_translation_settings.cjs",
     "build:backend": "python scripts/build_backend.py",
     "dist": "npm run build:backend && electron-builder --publish never"
   },

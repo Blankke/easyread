@@ -2,11 +2,12 @@
 import json
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from easyread.chat import chat, chat_models
 
-PIECES = ["<think>先想", "一想</think>", "标准误差", "除以 $\sqrt{n}$", "。"]
+PIECES = ["<think>先想", "一想</think>", "标准误差", r"除以 $\sqrt{n}$", "。"]
 
 
 class FakeAPI(BaseHTTPRequestHandler):
@@ -34,7 +35,7 @@ class ChatStreamTest(unittest.TestCase):
         finally:
             srv.shutdown()
             srv.server_close()
-        self.assertEqual(out, "标准误差除以 $\sqrt{n}$。")
+        self.assertEqual(out, r"标准误差除以 $\sqrt{n}$。")
 
     def test_model_list_picks_preset_key(self):
         cfg = {"engine": "claude", "claude": {"model": ""}, "codex": {"model": ""},
@@ -80,6 +81,15 @@ class ChatStreamTest(unittest.TestCase):
             red = chat.prompt(ws, [{"role": "user", "content": "我标红的那些有什么联系"}], None, "", "openai")
             self.assertIn("红色重点", red)
             self.assertNotIn("黄色句子", red)              # 只带问到的颜色
+            # 网页问答各回答方式均通过消息传引用和相关标记，全文由已有项目资料提供。
+            with mock.patch.object(chat, "_paper_context", side_effect=AssertionError("不应重新拼接全文")):
+                for style in ("standard", "ste100", "xray"):
+                    web = chat.prompt(ws, [{"role": "user", "content": "我标红的那些有什么联系"}],
+                                      "a", "甲段", "chatgpt_web", refs, answer_style=style)
+                    self.assertIn("红色重点", web)
+                    self.assertIn("甲段 $x$", web)
+                    self.assertIn("读者选中：「丙」", web)
+                    self.assertNotIn("黄色句子", web)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

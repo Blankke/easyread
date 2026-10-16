@@ -11,12 +11,16 @@ import re
 _TEX_COMMANDS = frozenset({"begin", "bar", "beta", "frac", "nabla", "nu", "operatorname", "overline",
                            "right", "rm", "sqrt", "text", "times", "top", "underbrace"})
 _TEX_COMMAND_PATTERN = re.compile(r"[A-Za-z]+")
+_TEX_ENVIRONMENT = re.compile(r"(begin|end)\{([A-Za-z*]+)\}")
+_ROW_ENVIRONMENTS = frozenset({"matrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix",
+                               "smallmatrix", "array", "aligned", "alignedat", "gathered", "cases"})
 
 
 def repair_escapes(body: str) -> str:
     """只修 JSON 字符串内的反斜杠，防止 TeX 命令被当成 JSON 的换行或制表符。"""
     out = []
     inside = math = tex = False
+    environments = []
     i = 0
     while i < len(body):
         char = body[i]
@@ -25,8 +29,10 @@ def repair_escapes(body: str) -> str:
                 inside = True
                 tex = bool(re.search(r'"tex"\s*:\s*$', body[max(0, i - 80):i]))
                 math = False
+                environments = []
         elif char == '"':
             inside = math = tex = False
+            environments = []
         elif char == "$":
             # $$ 是一个行间公式边界，不能连续翻转两次。
             pair = body.startswith("$$", i)
@@ -36,7 +42,30 @@ def repair_escapes(body: str) -> str:
             continue
         elif char == "\\":
             nxt = body[i + 1] if i + 1 < len(body) else ""
+            end = i + 1
+            while end < len(body) and body[end] == "\\":
+                end += 1
+            width = end - i
+            environment = _TEX_ENVIRONMENT.match(body, end) if width <= 2 else None
+            if environment:
+                action, name = environment.groups()
+                if action == "begin":
+                    # 单斜杠的 begin 说明该环境直接输出了 TeX，尚未做 JSON 转义。
+                    environments.append((name, width == 1))
+                elif environments and environments[-1][0] == name:
+                    environments.pop()
+            if width >= 4:
+                # 已正确转义的行分隔符原样保留；奇数尾巴交给下一轮处理 TeX 命令。
+                paired = width - width % 2
+                out.append("\\" * paired)
+                i += paired
+                continue
             if nxt in ('"', "\\"):
+                if (nxt == "\\" and not environment and environments
+                        and environments[-1][0] in _ROW_ENVIRONMENTS and environments[-1][1]):
+                    # 原始 TeX 中的双斜杠是矩阵/多行公式换行，JSON 中必须写成四个。
+                    # 正常 JSON 的双斜杠 begin 不进入此分支，避免重复转义合法公式。
+                    out.extend((char, nxt))
                 out.extend((char, nxt))
                 i += 2
                 continue

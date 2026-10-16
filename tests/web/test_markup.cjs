@@ -96,6 +96,22 @@ $$\left|\frac{\sinh q}{q}\right|$$`);
   assert.ok(!html.includes("katex-error"));
 });
 
+test("矩阵在论文公式、问答和表格内保留两行两列，不被 Markdown 拆坏", () => {
+  const PR = markup(true);
+  const tex = String.raw`\mathbf H_2=\frac{1}{\sqrt{2}}\begin{bmatrix}1&1\\1&-1\end{bmatrix}`;
+  const outputs = [PR.tex(tex, true), PR.md('$' + tex + '$'),
+    PR.mdBlocks('矩阵如下：\n\\[\n' + tex + '\n\\]'),
+    PR.mdBlocks('| 矩阵 |\n| --- |\n| $' + tex + '$ |')];
+  for (const html of outputs) {
+    const table = html.match(/<mtable\b[\s\S]*?<\/mtable>/)?.[0];
+    assert.ok(table, '必须渲染为 MathML 矩阵');
+    assert.equal((table.match(/<mtr>/g) || []).length, 2);
+    assert.equal((table.match(/<mtd>/g) || []).length, 4);
+    assert.ok(html.includes(String.raw`1&amp;1\\1&amp;-1`), 'TeX 注解应保留完整换行符');
+    assert.doesNotMatch(html, /katex-error|mathcolor="#cc0000"/);
+  }
+});
+
 test("headings can precede tables and lists; their text still escapes HTML", () => {
   const html = markup().mdBlocks("## <script>unsafe</script>\n| Metric | Value |\n| --- | --- |\n| Error | 2% |\n## 中文解释\n- 误差为 **2%**。\n- 保留原值。");
   assert.ok(html.includes('&lt;script&gt;unsafe&lt;/script&gt;'));
