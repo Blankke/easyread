@@ -10,7 +10,8 @@
     "start": "node scripts/dev_desktop.cjs",
     "test:web": "node --test tests/desktop/test_chatgpt*.cjs tests/web/test_web_browser_nav.cjs tests/web/test_chat_ui.cjs tests/web/test_web_translation_settings.cjs",
     "build:backend": "python scripts/build_backend.py",
-    "dist": "npm run build:backend && electron-builder --publish never"
+    "dist": "npm run build:backend && electron-builder --publish never",
+    "dist:portable": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows_portable.ps1"
   },
   "devDependencies": {
     "electron": "^44.5.1",
@@ -49,6 +50,11 @@
           ]
         }
       ]
+    },
+    "portable": {
+      "artifactName": "EasyRead-Portable-${version}-${arch}.exe",
+      "requestExecutionLevel": "user",
+      "unpackDirName": false
     },
     "nsis": {
       "oneClick": false,

@@ -140,6 +140,19 @@ Windows PowerShell 中激活环境用 `.\.venv\Scripts\Activate.ps1`，确认解
 npm run dist
 ```
 
+生成 Windows x64 **免安装单文件 EXE**，在 Windows PowerShell 的项目目录执行：
+
+```powershell
+# 首次构建安装打包依赖，并验证生成的 EXE 可以独立启动
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_windows_portable.ps1 -InstallDependencies -VerifyLaunch
+# 后续重新构建（自动激活项目 .venv，并检查实际 Python 路径）
+npm run dist:portable
+```
+
+构建机需要 Node.js 22+ 和 Windows Python 3.10+，以及项目 `.venv`（尚未创建时先运行 `py -3.12 -m venv .venv`）。输出为 `dist/electron/EasyRead-Portable-版本号-x64.exe`，发给别人时只需这一份 EXE；使用者无需安装 Python、Node.js 或 Electron。双击会先自动解压再打开窗口。便携版采用 [electron-builder 的 portable 目标](https://www.electron.build/nsis/)。
+
+论文与设置保存在 EXE 旁边的 `data` 文件夹，目录不可写时使用 `~/EasyRead`；移动已有文献时请一起带上 `data`。ChatGPT 登录缓存保存在本机 `%APPDATA%\EasyRead`。升级时关闭程序并替换 EXE，保留 `data`，便携版不执行安装版的应用内更新。构建只打包程序与运行环境，首次使用需要配置模型或登录 ChatGPT；CLI 模型来源仍需另装对应 CLI。当前源码目录的文献、配置和密钥不会打入分发文件。
+
 输出在 `dist/electron/`：Windows 为 NSIS 安装程序，macOS 为 DMG（另有一个给应用内更新用的 zip），Linux 为 AppImage。macOS 包由 `scripts/mac_sign.cjs` 用固定的自签名证书签名，证书从环境变量 `MAC_SIGN_P12`、`MAC_SIGN_P12_PASSWORD` 读（发版时来自仓库 Secrets）；本机没设时退回临时签名，这样打出的包不能应用内更新。推送 `v*` 标签后，GitHub Actions 会在三个系统上构建，并把这些安装包自动附加到 GitHub Release；源码 zip 仍会由 GitHub 保留。打包后的文献库和设置：Windows 存在安装目录下的 `data`（安装目录写不进去时退回 `~/EasyRead`），macOS、Linux 存在 `~/EasyRead`。
 
 桌面版可在“设置 → 模型”中打开 ChatGPT 网页，登录并刷新账号可用的模型列表，然后添加“ChatGPT 网页”模型卡片并设为翻译或问 AI 默认。翻译任务会上传原始 PDF、阅读标记及所需附件，按批次回写阅读区。问 AI 只发送文字消息，包含问题、引用段落和按需选取的划线；按论文题名和来源检索项目中已有的论文原本，不上传 PDF、笔记或其他附件，也不重复粘贴整篇论文。项目资料无法读取时，回答须说明依据范围。网页任务在独立的隐藏窗口中执行。任务期间手动打开侧栏，会显示只读的实时画面和当前阶段；调整宽度、关闭侧栏及切换 EasyRead 页面均不改变执行页面。空闲时侧栏显示可交互网页，用于登录和核对会话。需要登录或验证时，EasyRead 会提示你主动打开 ChatGPT；完成后可关闭网页并重试。手动打开的网页可拖动左侧边框调节宽度，拖到窗口右边缘松开即可关闭，也可以点顶部“关闭”，后台任务会继续执行。同一批次重试会先从原网页会话回收已经完成的回答，避免重复发送。网页控件变化或发送状态不明时，可主动打开内置网页核对后再重试。普通浏览器打开的 EasyRead 页面不支持这一来源。

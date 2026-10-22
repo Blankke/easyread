@@ -66,3 +66,29 @@ test("source runs and other platforms keep the old behaviour", async () => {
   assert.strictEqual(await dataDir.prepare({ isPackaged: false }, () => {}, { exe: s.exe, home: s.home, platform: "win32" }), null);
   assert.strictEqual(await dataDir.prepare(packaged, () => {}, { exe: s.exe, home: s.home, platform: "darwin" }), null);
 });
+
+test("便携版数据跨临时解压目录保留，且不迁移本机旧数据", async () => {
+  const s = sandbox();
+  seedLegacy(s, { engine: "claude" });
+  const portable = path.join(s.root, "便携 程序");
+  const opts = { home: s.home, platform: "win32", env: { PORTABLE_EXECUTABLE_DIR: portable } };
+  const dir = await dataDir.prepare(packaged, () => {}, { ...opts, exe: s.exe });
+  assert.strictEqual(dir, path.join(portable, "data"));
+  fs.writeFileSync(path.join(dir, "config.json"), '{"engine":"none"}');
+  const reopened = await dataDir.prepare(packaged, () => {}, { ...opts, exe: path.join(s.root, "new-temp", "EasyRead.exe") });
+  assert.strictEqual(reopened, dir);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(reopened, "config.json"))).engine, "none");
+  assert.ok(fs.existsSync(path.join(s.legacy, "config.json")));
+  assert.ok(!fs.existsSync(s.data));
+});
+
+test("便携 EXE 目录不可写时回退到用户目录", async () => {
+  const s = sandbox();
+  const blocked = path.join(s.root, "blocked");
+  fs.writeFileSync(blocked, "占位文件，不能创建子目录");
+  const dir = await dataDir.prepare(packaged, () => {}, {
+    exe: s.exe, home: s.home, platform: "win32", env: { PORTABLE_EXECUTABLE_DIR: blocked },
+  });
+  assert.strictEqual(dir, null);
+  assert.ok(!fs.existsSync(s.data));
+});

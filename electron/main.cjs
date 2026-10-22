@@ -23,6 +23,8 @@ let webHeartbeatTimer;
 // 环境变量不全（比如从精简环境的脚本里启动）时 getPath("appData") 会直接抛错，
 // 这时按 Electron 自己的默认位置算一份，免得一启动就弹主进程报错框。
 function appDataDir() {
+  // Windows 系统路径 API 可能忽略进程级 APPDATA；显式遵循它以支持隔离运行和测试。
+  if (process.platform === "win32" && process.env.APPDATA) return process.env.APPDATA;
   try {
     return app.getPath("appData");
   } catch {

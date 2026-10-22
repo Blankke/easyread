@@ -5,7 +5,7 @@ const vm = require("node:vm");
 const { EventEmitter } = require("node:events");
 const { test } = require("node:test");
 
-async function desktop(platform = "darwin", lock = true, ready = true, argv = [], appDataBroken = false, projectStarts = null) {
+async function desktop(platform = "darwin", lock = true, ready = true, argv = [], appDataBroken = false, projectStarts = null, env = {}) {
   const app = new EventEmitter();
   Object.assign(app, {
     setPath(name, value) { this.paths = { ...this.paths, [name]: value }; },
@@ -56,7 +56,7 @@ async function desktop(platform = "darwin", lock = true, ready = true, argv = []
     },
   };
   const proc = new EventEmitter();
-  Object.assign(proc, { platform, env: {}, resourcesPath: "/tmp/Resources", argv: ["EasyRead.exe", ...argv] });
+  Object.assign(proc, { platform, env, resourcesPath: "/tmp/Resources", argv: ["EasyRead.exe", ...argv] });
   const fakeRequire = name => name === "electron" ? { app, BrowserWindow: Window, Menu, ipcMain,
     WebContentsView: projectStarts ? class {} : undefined,
     dialog: { showErrorBox() {}, showOpenDialog: async () => ({ canceled: false, filePaths: ["/tmp/chosen"] }) }, shell: {} }
@@ -94,6 +94,19 @@ test("startup survives a missing appData path instead of crashing the main proce
   const d = await desktop("win32", true, true, [], true);
   assert.ok(d.app.paths.userData.endsWith("EasyRead"));
   assert.equal(d.windows.length, 1);
+  d.app.quit();
+});
+
+test("便携版启动不会覆盖系统的 easyread 协议关联", () => {
+  const calls = [];
+  const app = { setAsDefaultProtocolClient: (...args) => calls.push(args) };
+  require("../../electron/deep-link.cjs").register(app, { env: { PORTABLE_EXECUTABLE_DIR: "D:\\EasyRead" } });
+  assert.deepEqual(calls, []);
+});
+
+test("Windows 隔离运行使用进程级 APPDATA 保存浏览器缓存", async () => {
+  const d = await desktop("win32", true, true, [], false, null, { APPDATA: "/isolated/appdata" });
+  assert.equal(d.app.paths.userData, path.join("/isolated/appdata", "EasyRead"));
   d.app.quit();
 });
 

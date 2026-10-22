@@ -80,12 +80,16 @@ async function migrate(dir, legacy, log) {
 }
 
 // 返回给后端用的数据目录（设成 EASYREAD_HOME）；不用改时返回 null
-// opts 只给测试用：{ exe, home, platform }
+// opts 只给测试用：{ exe, home, platform, env }
 async function prepare(app, log = () => {}, opts = {}) {
   if (!app.isPackaged || (opts.platform || process.platform) !== "win32") return null;
-  const dir = path.join(path.dirname(opts.exe || process.execPath), "data");
+  // 便携版的进程运行在临时解压目录；数据必须跟随用户双击的外层 EXE。
+  const portable = (opts.env || process.env).PORTABLE_EXECUTABLE_DIR;
+  const dir = path.join(portable || path.dirname(opts.exe || process.execPath), "data");
   const legacy = legacyDir(opts.home);
   if (!writable(dir)) return null;
+  // 便携版独立保存数据，不自动搬走本机已有安装版或源码版的数据。
+  if (portable) return dir;
   try {
     await migrate(dir, legacy, log);
   } catch (error) {

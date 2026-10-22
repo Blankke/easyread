@@ -25,6 +25,8 @@ function fromArgv(argv) {
 
 function register(app, proc) {
   if (!app.setAsDefaultProtocolClient) return;
+  // 便携程序每次解压到不同位置，不把临时 EXE 写成系统协议默认程序。
+  if (proc.env?.PORTABLE_EXECUTABLE_DIR) return;
   // 开发时（electron .）要把入口脚本一起登记，否则系统会启动一个空的 Electron
   if (proc.defaultApp && proc.argv && proc.argv.length >= 2) {
     app.setAsDefaultProtocolClient(SCHEME, proc.execPath, [require("path").resolve(proc.argv[1])]);

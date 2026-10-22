@@ -41,6 +41,14 @@ test("failed download can retry", async () => {
   assert.equal((await f.run("download")).phase, "downloaded");
 });
 
+test("便携版不下载或执行安装版更新", async () => {
+  const f = fixture("win32", { PORTABLE_EXECUTABLE_DIR: "D:\\EasyRead" });
+  assert.equal((await f.run("state")).supported, false);
+  await f.run("download");
+  await f.run("install");
+  assert.deepEqual(f.calls, []);
+});
+
 test("no available update does not download; install without download does nothing", async () => {
   const f = fixture();
   f.updater.checkForUpdates = async () => ({ isUpdateAvailable: false });

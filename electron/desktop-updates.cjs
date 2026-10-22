@@ -4,7 +4,8 @@
 // extracted or source runs keep the download link. macOS releases are signed with a fixed
 // self-signed certificate (scripts/mac_sign.cjs); Squirrel.Mac only accepts an update signed by the same one.
 function canUpdate(platform, env) {
-  return platform === "win32" || platform === "darwin" || (platform === "linux" && !!env.APPIMAGE);
+  // 便携版通过替换外层 EXE 升级，不能让 NSIS 更新器安装另一个版本。
+  return (platform === "win32" && !env.PORTABLE_EXECUTABLE_DIR) || platform === "darwin" || (platform === "linux" && !!env.APPIMAGE);
 }
 
 function registerUpdates({ app, ipcMain, updater, trustedWindow, getWindow, prepareInstall, recover, platform = process.platform, env = process.env }) {
