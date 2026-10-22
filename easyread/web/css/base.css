@@ -41,6 +41,7 @@ html[lang="en"] {
   --sans-zh: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
 }
 /* 译文不是中文时换正文字体（变量名沿用 -zh，指“译文”） */
+html[lang="zh-Hant"] { --ui: "PingFang TC", "Noto Sans TC", "Microsoft JhengHei UI", "Microsoft JhengHei", system-ui, sans-serif; }
 html[data-target="zh-Hant"] { --serif-zh: "Source Serif 4", "Source Serif Pro", Charter, "Iowan Old Style", Georgia, "Noto Serif TC", "Source Han Serif TC", "Songti TC", PMingLiU, serif; --sans-zh: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, "Noto Sans TC", "PingFang TC", "Microsoft JhengHei UI", sans-serif; }
 html[data-target="ja"] { --serif-zh: "Noto Serif JP", "Source Han Serif JP", "Hiragino Mincho ProN", "Yu Mincho", serif; --sans-zh: "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", Meiryo, sans-serif; }
 html[data-target="ko"] { --serif-zh: "Noto Serif KR", "Source Han Serif KR", AppleMyungjo, Batang, serif; --sans-zh: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }

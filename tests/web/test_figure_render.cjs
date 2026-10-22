@@ -11,6 +11,7 @@ function reader(block, edits = {}, meta) {
     state: { reader: { edits }, paper: { blocks: [block], meta } },
     on() {}, emit() {}, esc: String, md: String, t: s => s, imageUrl: s => '/p/test/' + s, hashText: s => s,
   };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../../easyread/web/js/common/markup.js"), "utf8"), { window: { PR }, URL });
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../easyread/web/js/reader/render.js'), 'utf8'), {
     window: { PR }, document: {
       getElementById: () => node,

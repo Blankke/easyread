@@ -2,7 +2,7 @@
 
   easyread serve [--open] [--port N] [--exit-on-close]   启动（或复用已在跑的）服务
   easyread list                           列出文献库
-  easyread import 论文.pdf|arXiv编号 [--no-translate]
+  easyread import 论文.pdf|arXiv编号 [--no-translate] [--link]
   easyread translate ID [--pages 3-5]     排队翻译（需要服务在跑；否则直接前台译）
   easyread status ID                      译文进度、用户改过的译文、笔记、待回答的问题
   easyread blocks ID --from 批次.json [--done 4-6] [--replace]
@@ -85,8 +85,10 @@ def cmd_list(a):
 def cmd_import(a):
     L = lib()
     src = a.source
-    if Path(src).exists():
-        ws, fresh = L.create_from_pdf(Path(src).read_bytes(), Path(src).name)
+    if getattr(a, "link", False):
+        ws, fresh = L.import_pdf_path(src, link=True)
+    elif Path(src).exists():
+        ws, fresh = L.import_pdf_path(src)
     else:
         data, name, meta = L.fetch(src)
         ws, fresh = L.create_from_pdf(data, name, meta)
@@ -222,7 +224,9 @@ def main(argv=None):
     p.add_argument("--exit-on-close", action="store_true", help="页面都关了、后台任务做完后自动退出（start.cmd / start.sh 用）")
     p.set_defaults(fn=cmd_serve)
     p = sub.add_parser("list"); p.set_defaults(fn=cmd_list)
-    p = sub.add_parser("import"); p.add_argument("source"); p.add_argument("--no-translate", action="store_true"); p.set_defaults(fn=cmd_import)
+    p = sub.add_parser("import"); p.add_argument("source"); p.add_argument("--no-translate", action="store_true")
+    p.add_argument("--link", action="store_true", help="链接本地 PDF，不复制原文件")
+    p.set_defaults(fn=cmd_import)
     p = sub.add_parser("translate"); p.add_argument("id"); p.add_argument("--pages"); p.set_defaults(fn=cmd_translate)
     for name, fn in (("status", cmd_status), ("check", cmd_check), ("locate", cmd_locate), ("export", cmd_export)):
         p = sub.add_parser(name); p.add_argument("id"); p.set_defaults(fn=fn)

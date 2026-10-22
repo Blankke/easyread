@@ -10,12 +10,14 @@ from __future__ import annotations
 import base64
 import json
 import math
+import mimetypes
 import random
 import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
+from http.client import IncompleteRead
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Iterator
@@ -24,6 +26,7 @@ from .. import __version__
 from ..server import http
 from . import usage
 from .engines import Cancelled, EngineError
+from .stream_recovery import StreamInterrupted, non_stream_body, unsupported_stream
 from ..app.i18n import tr
 
 def api_kinds() -> list[tuple[str, str]]:
@@ -61,7 +64,7 @@ def _headers(o: dict, stream: bool = False) -> dict:
 
 
 def _body(o: dict, prompt: str, images: list[Path], stream: bool, temperature: float | None) -> dict:
-    urls = ["data:image/jpeg;base64," + base64.b64encode(p.read_bytes()).decode() for p in images] if o.get("vision") else []
+    urls = ["data:" + (mimetypes.guess_type(str(p))[0] or "image/png") + ";base64," + base64.b64encode(p.read_bytes()).decode() for p in images] if o.get("vision") else []
     if kind(o) == "responses":
         content = [{"type": "input_text", "text": prompt}] + [{"type": "input_image", "image_url": u} for u in urls]
         body = {"model": o["model"], "input": [{"role": "user", "content": content}], "store": False}
@@ -113,40 +116,46 @@ _BACKOFF = (10, 20, 40, 60, 60)
 
 
 def complete(o: dict, prompt: str, images: list[Path], cancel=None, meter=None) -> str:
-    body = _body(o, prompt, images, False, None if kind(o) == "responses" else 0.2)
-    res = None
+    # 也用流式请求，收齐了再整段交出去：一次性返回要等整批译完才有第一个字节，推理模型一批常要好几分钟，
+    # 持续收到片段可减少网关的空闲超时；首包迟到或网关总时限仍可能导致超时。
+    body = _body(o, prompt, images, True, None if kind(o) == "responses" else 0.2)
+    text, used = "", {}
     for attempt in range(len(_BACKOFF) + 1):  # 限流、服务端错误、网络抖动：等一会儿再试
         if cancel is not None and cancel.is_set():
             raise Cancelled()
         try:
-            res = _fetch(o, body, cancel)
+            text, used = _fetch(o, body, cancel)
             break
         except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 502, 503, 504) and attempt < len(_BACKOFF):
+            if e.code in (429, 500, 502, 503, 504, 524) and attempt < len(_BACKOFF):
                 _sleep(_retry_after(e.headers.get("Retry-After"), _BACKOFF[attempt] * random.uniform(.8, 1.2)), cancel)
                 continue
             raise _http_error(e)
+        except (StreamInterrupted, IncompleteRead):
+            if attempt < 1:
+                _sleep(2, cancel)
+                continue
+            raise
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
             if attempt < 2:
                 _sleep(5, cancel)
                 continue
             raise EngineError(tr("连不上接口：{err}", err=e))
-    if meter is not None and isinstance(res, dict):
-        meter.add(**usage.from_openai(res))
-    return _responses_text(res) if kind(o) == "responses" else _chat_text(res)
+    if meter is not None:
+        meter.add(**used)
+    return text
 
 
-def _fetch(o: dict, body: dict, cancel) -> dict:
-    """发请求、读完整个回答。请求放在线程里，点取消就不再等它（这次调用的回答丢掉），不然要等接口返回，常常一两分钟。"""
+def _fetch(o: dict, body: dict, cancel) -> tuple[str, dict]:
+    """发请求、读完整个回答，给（全文, 用量）。请求放在线程里，点取消就不再等它（这次调用的回答丢掉），
+    不然要等接口开始返回，常常要一分钟。"""
     if cancel is None:
-        with _open(o, body, False) as r:
-            return json.loads(r.read())
+        return _read(o, body, threading.Event())
     box: dict = {}
 
     def run():
         try:
-            with _open(o, body, False) as r:
-                box["res"] = json.loads(r.read())
+            box["res"] = _read(o, body, cancel)
         except BaseException as e:  # 原样交回主线程，限流重试、连不上这些分支照旧
             box["err"] = e
     t = threading.Thread(target=run, daemon=True)
@@ -158,6 +167,38 @@ def _fetch(o: dict, body: dict, cancel) -> dict:
     if "err" in box:
         raise box["err"]
     return box["res"]
+
+
+def _read(o: dict, body: dict, cancel) -> tuple[str, dict]:
+    try:
+        response = _open(o, body, bool(body.get("stream")))
+    except urllib.error.HTTPError as e:
+        if not body.get("stream") or not unsupported_stream(e):
+            raise
+        if cancel.is_set():
+            raise Cancelled()
+        # Remember fallback within this call, including subsequent transport retries.
+        plain = non_stream_body(body)
+        body.clear()
+        body.update(plain)
+        response = _open(o, body, False)
+    with response as r:
+        if not body.get("stream") or "json" in r.headers.get("Content-Type", ""):  # 接口不认 stream，照旧一次性返回了整段
+            res = json.loads(r.read())
+            return (_responses_text(res) if kind(o) == "responses" else _chat_text(res)), usage.from_openai(res)
+        last = _LastUsage()
+        pieces = _responses_pieces(r, cancel, last) if kind(o) == "responses" else _chat_pieces(r, cancel, last)
+        return "".join(pieces), last.used
+
+
+class _LastUsage:
+    """流式回答的用量只留最后一份：有的接口每一块都带上累计用量，一块一记就把一次调用记成了好几次。"""
+
+    def __init__(self):
+        self.used: dict = {}
+
+    def add(self, **used):
+        self.used = used
 
 
 def _chat_text(res) -> str:
@@ -224,10 +265,10 @@ def _sleep(seconds: float, cancel) -> None:
 
 
 # ---------- 逐字输出（问 AI 用） ----------
-def stream(o: dict, text: str, cancel, meter=None) -> Iterator[str]:
+def stream(o: dict, text: str, cancel, meter=None, images: list[Path] | None = None) -> Iterator[str]:
     if cancel.is_set():
         raise Cancelled()
-    body = _body(o, text, [], True, None if kind(o) == "responses" else 0.4)
+    body = _body(o, text, images or [], True, None if kind(o) == "responses" else 0.4)
     try:
         r = _open(o, body, True)
     except urllib.error.HTTPError as e:
@@ -308,7 +349,7 @@ def _chat_pieces(r, cancel, meter=None) -> Iterator[str]:
         finished = finished or bool(choice.get("finish_reason"))
         yield (choice.get("delta") or {}).get("content") or ""
     if not finished:
-        raise EngineError(tr("接口连接提前结束，回答未完成，请重试。"))
+        raise StreamInterrupted(tr("接口连接提前结束，回答未完成，请重试。"))
 
 
 def _responses_pieces(r, cancel, meter=None) -> Iterator[str]:
@@ -327,7 +368,7 @@ def _responses_pieces(r, cancel, meter=None) -> Iterator[str]:
         elif t == "error":
             err = (ev.get("response") or {}).get("error") or ev.get("error") or ev.get("message")
             raise EngineError(tr("接口返回出错：{err}", err=err))
-    raise EngineError(tr("接口连接提前结束，回答未完成，请重试。"))
+    raise StreamInterrupted(tr("接口连接提前结束，回答未完成，请重试。"))
 
 
 def _strip_think(pieces: Iterator[str]) -> Iterator[str]:

@@ -97,6 +97,29 @@ class MigrateTest(unittest.TestCase):
         self.assertEqual((st["state"], st["imported"]), ("done", 1))
         self.assertEqual(st["failed"][0]["title"], "Paper B")
 
+    def test_linked_import_preserves_original_and_deduplicates_reader_data(self):
+        self.build()
+        st = self.mig.start("zotero", str(self.zdir), link=True)
+        self.assertEqual((st["state"], st["imported"], len(st["skipped"])), ("done", 1, 1))
+        ws = self.papers()["Paper A"]
+        source = ws.source_pdf
+        self.assertTrue(source.is_relative_to(self.zdir.resolve()))
+        self.assertFalse((ws.root / "source.pdf").exists())
+        self.assertEqual(ws.load("item")["tags"], ["ML/CV", "Zotero 标签/必读"])
+        ws.apply_reader_ops([{"op": "paper_note", "body": "My reading note"}, {"op": "progress", "ratio": .6}])
+        saved = ws.reader_path.read_bytes()
+        st = self.mig.start("zotero", str(self.zdir), link=True)
+        self.assertEqual((st["imported"], st["existing"]), (0, 1))
+        self.assertEqual(ws.reader_path.read_bytes(), saved)
+        self.assertTrue(source.is_file())
+
+    def test_linked_mode_rejects_network_download_before_starting(self):
+        self.build()
+        with self.assertRaises(ValueError):
+            self.mig.start("zotero", str(self.zdir), fetch=True, link=True)
+        self.assertEqual(self.mig.status["state"], "idle")
+        self.assertEqual(self.app.lib.all(), [])
+
     def test_category_names_are_clipped(self):
         self.assertEqual(migrate.cat_path("x" * 50, " a/b "), "x" * 40 + "/a／b")
 

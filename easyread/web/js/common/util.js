@@ -29,7 +29,7 @@ window.PR = window.PR || {};
      译成英文时原标题可能是别的语言，不标 lang；原文本来就是英文、标题照抄的，第二行不重复 */
   PR.titles = function (i) {
     const tr = i.title_zh || "", en = i.title_en || "", lang = i.target || "zh";
-    if (tr && (PR.lang === lang.split("-")[0] || !en)) return { main: tr, sub: tr === en ? "" : en, subLang: lang === "en" ? "" : "en", short: i.short_zh || tr.split(/[：:]/)[0] };
+    if (tr && (PR.lang.split("-")[0] === lang.split("-")[0] || !en)) return { main: tr, sub: tr === en ? "" : en, subLang: lang === "en" ? "" : "en", short: i.short_zh || tr.split(/[：:]/)[0] };
     return { main: en || PR.t("（未命名）"), sub: tr, subLang: lang, short: en.split(/:\s/)[0] || PR.t("（未命名）") };
   };
 
@@ -67,7 +67,7 @@ window.PR = window.PR || {};
     if (s < 3600) return PR.t("{n} 分钟前", { n: Math.floor(s / 60) });
     if (s < 86400) return PR.t("{n} 小时前", { n: Math.floor(s / 3600) });
     if (s < 86400 * 30) return PR.t("{n} 天前", { n: Math.floor(s / 86400) });
-    return new Date(iso).toLocaleDateString(PR.lang === "en" ? "en-US" : "zh-CN");
+    return new Date(iso).toLocaleDateString(PR.lang === "en" ? "en-US" : PR.lang === "zh-Hant" ? "zh-TW" : "zh-CN");
   };
 
   PR.uid = (p) => (p || "n") + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -113,10 +113,14 @@ window.PR = window.PR || {};
     if (!PR.token || location.protocol === "file:" || !Object.keys(prefQueue).length) return;
     const body = prefQueue; prefQueue = {};
     if (leaving) {  // 关页面、刷新时：keepalive 让请求在页面走掉后也能发完
-      fetch("/api/prefs", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json", "X-Token": PR.token }, body: JSON.stringify(body) }).catch(() => {});
-    } else PR.api("/api/prefs", { method: "POST", body }).catch(() => { /* 下次改动再存 */ });
+      return fetch("/api/prefs", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json", "X-Token": PR.token }, body: JSON.stringify(body) }).catch(() => {});
+    } else return PR.api("/api/prefs", { method: "POST", body }).catch(() => { /* 下次改动再存 */ });
   }
   window.addEventListener("pagehide", () => flushPrefs(true));
+  /* 桌面版退出前会来问一句：把偏好和补存写回去再停后端（见 electron/main.cjs） */
+  if (window.easyreadDesktop && window.easyreadDesktop.onBeforeQuit) {
+    window.easyreadDesktop.onBeforeQuit(() => Promise.all([flushPrefs(true), PR.flushProgress?.()]));
+  }
   PR.loadPrefs = async function () {
     if (location.protocol === "file:") return {};
     try {
@@ -135,7 +139,7 @@ window.PR = window.PR || {};
     back: "M12.5 4.5L7 10l5.5 5.5",
     search: "M9 15a6 6 0 1 0 0-12 6 6 0 0 0 0 12zM13.5 13.5L17 17",
     plus: "M10 4v12M4 10h12",
-    gear: "M10 12.6a2.6 2.6 0 1 0 0-5.2 2.6 2.6 0 0 0 0 5.2zM16.3 11.6l1.2.9-1.5 2.6-1.4-.5a6 6 0 0 1-1.6.9l-.2 1.5h-3l-.2-1.5a6 6 0 0 1-1.6-.9l-1.4.5L4.1 12.5l1.2-.9a6 6 0 0 1 0-1.9l-1.2-.9 1.5-2.6 1.4.5a6 6 0 0 1 1.6-.9L8.8 4.3h3l.2 1.5a6 6 0 0 1 1.6.9l1.4-.5 1.5 2.6-1.2.9a6 6 0 0 1 0 1.9z",
+    gear: "M8.58 4.69L8.73 2.81L11.27 2.81L11.42 4.69A5.5 5.5 0 0 1 12.75 5.24L14.19 4.02L15.98 5.81L14.76 7.25A5.5 5.5 0 0 1 15.31 8.58L17.19 8.73L17.19 11.27L15.31 11.42A5.5 5.5 0 0 1 14.76 12.75L15.98 14.19L14.19 15.98L12.75 14.76A5.5 5.5 0 0 1 11.42 15.31L11.27 17.19L8.73 17.19L8.58 15.31A5.5 5.5 0 0 1 7.25 14.76L5.81 15.98L4.02 14.19L5.24 12.75A5.5 5.5 0 0 1 4.69 11.42L2.81 11.27L2.81 8.73L4.69 8.58A5.5 5.5 0 0 1 5.24 7.25L4.02 5.81L5.81 4.02L7.25 5.24A5.5 5.5 0 0 1 8.58 4.69ZM12.4 10a2.4 2.4 0 1 0 -4.8 0a2.4 2.4 0 1 0 4.8 0z",
     star: "M10 3l2.1 4.4 4.8.6-3.5 3.3.9 4.7L10 13.7 5.7 16l.9-4.7L3.1 8l4.8-.6z",
     note: "M4 4.5h12v8.5H9l-3.5 3v-3H4z",
     edit: "M13 3.5l3.5 3.5L7.5 16 3.5 16.5 4 12.5z",

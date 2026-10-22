@@ -6,18 +6,18 @@ window.PR = window.PR || {};
 
   let dict = {};
   try { dict = JSON.parse((document.getElementById("pr-i18n") || {}).textContent || "{}"); } catch (e) { dict = {}; }
-  PR.lang = document.documentElement.lang === "en" ? "en" : "zh";
+  PR.lang = ["en", "zh-Hant"].includes(document.documentElement.lang) ? document.documentElement.lang : "zh";
   PR.langChoice = document.documentElement.dataset.langChoice || "auto";  // 设置里选的：auto 跟随系统
   PR.target = document.documentElement.dataset.target || "zh";  // 译文语言（论文翻成什么），名字表在 util.js
 
   const fill = (s, vars) => vars ? s.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m)) : s;
-  PR.t = (zh, vars) => fill(PR.lang === "en" ? dict[zh] || zh : zh, vars);
+  PR.t = (zh, vars) => fill(PR.lang !== "zh" ? dict[zh] || zh : zh, vars);
 
   /* 写死在 HTML 里的中文：按原文整句对照替换，HTML 不用改 */
   const CJK = /[一-鿿]/;
   const ATTRS = ["placeholder", "title", "aria-label", "alt"];
   PR.translateDom = function (root) {
-    if (PR.lang !== "en") return;
+    if (PR.lang === "zh") return;
     root = root || document.body;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
@@ -29,7 +29,7 @@ window.PR = window.PR || {};
       if (v && CJK.test(v) && dict[v.trim()]) el.setAttribute(a, dict[v.trim()]);
     }));
   };
-  if (PR.lang === "en") {
+  if (PR.lang !== "zh") {
     if (dict[document.title]) document.title = dict[document.title];
     if (document.body) PR.translateDom(document.body);
     else document.addEventListener("DOMContentLoaded", () => PR.translateDom(document.body));

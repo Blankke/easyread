@@ -8,7 +8,7 @@
 
   PR.$("#importBtn").innerHTML = PR.icon("plus", "sm") + "<span>" + PR.t("导入论文") + "</span>";
   PR.$("#settingsBtn").innerHTML = PR.icon("gear");
-  PR.$(".search .si").outerHTML = PR.icon("search", "sm");
+  PR.$(".search .si").outerHTML = PR.icon("search");
   PR.$("#sort").value = L.sort;
 
   L.byId = (id) => L.items.find((i) => i.id === id);
@@ -155,7 +155,7 @@
 
   function rowHtml(i) {
     const tt = PR.titles(i), title = tt.main;
-    const sub = tt.sub ? '<div class="t2" lang="' + tt.subLang + '">' + PR.esc(tt.sub) + "</div>" : "";
+    const sub = tt.sub ? '<div class="t2" lang="' + tt.subLang + '">' + PR.titleHtml(tt.sub) + "</div>" : "";
     const bits = [i.authors && PR.esc(i.authors.split(",").slice(0, 3).join(",") + (i.authors.split(",").length > 3 ? PR.t(" 等") : "")), i.year, i.venue || i.arxiv].filter(Boolean);
     const tags = (i.tags || []).map((t) => '<span class="chip cat" title="' + PR.esc(PR.catTree.label(t)) + '">' + PR.icon("folder", "sm") + PR.esc(PR.catTree.leaf(t)) + "</span>").join("");
     const thumb = i.thumb ? '<div class="thumb" style="background-image:url(' + i.thumb + ')"></div>' : '<div class="thumb blank">' + PR.icon("pdf") + "</div>";
@@ -164,7 +164,7 @@
     const picked = L.picked.has(i.id);
     return '<div class="row' + (L.selected === i.id ? " on" : "") + (picked ? " picked" : "") + '" data-id="' + i.id + '" role="option" draggable="true"' + (L.picking ? ' aria-selected="' + picked + '"' : "") + ">" +
       '<span class="pick" data-pick title="' + PR.t("勾选（批量操作）") + '">' + PR.icon("check", "sm") + "</span>" + thumb +
-      '<div><div class="t1">' + (i.starred ? '<span class="star">' + PR.icon("star") + "</span>" : "") + "<span>" + PR.esc(title) + "</span></div>" + sub +
+      '<div><div class="t1">' + (i.starred ? '<span class="star">' + PR.icon("star") + "</span>" : "") + "<span>" + PR.titleHtml(title) + "</span></div>" + sub +
       '<div class="t3">' + bits.map((b) => "<span>" + PR.esc(String(b)) + "</span>").join("<span>·</span>") + tags + "</div></div>" +
       '<div class="side-info">' + statusPill(i) + prog + L.jobLine(i) + notes + "</div></div>";
   }

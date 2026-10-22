@@ -4,6 +4,7 @@
   "use strict";
   const stack = [];
   let btn = null;
+  let group = null, dismissed = false;
   let hit = null;  // 刚才点的是哪一段（点了这段里的 [n]、“公式 (4)”），回来时高亮的就是它
   document.addEventListener("pointerdown", (e) => {
     const b = e.target.closest && e.target.closest('#paper [id^="b-"]');
@@ -21,6 +22,7 @@
     stack.push({ id, off: el ? el.getBoundingClientRect().top : 0, y: scrollY, exact: !!from });
     if (stack.length > 30) stack.shift();
     try { history.pushState({ easyreadBack: stack.length }, "", location.href); } catch (e) { /* file:// 下可能不让改历史 */ }
+    dismissed = false;
     show();
   };
 
@@ -31,12 +33,17 @@
   }
   function show() {
     if (!btn) {
-      btn = PR.el("button", { class: "jump-back", type: "button", title: PR.t("回到跳转前的位置（浏览器后退也可以）") });
+      group = PR.el("div", { class: "jump-back" });
+      btn = PR.el("button", { class: "jump-back-go", type: "button", title: PR.t("回到跳转前的位置（浏览器后退也可以）") });
       btn.onclick = () => (history.state && history.state.easyreadBack ? history.back() : goBack());
-      document.body.appendChild(btn);
+      const close = PR.el("button", { class: "jump-back-close", type: "button", title: PR.t("关闭"), "aria-label": PR.t("关闭") });
+      close.textContent = "×";
+      close.onclick = () => { dismissed = true; group.hidden = true; };
+      group.append(btn, close);
+      document.body.appendChild(group);
     }
     btn.innerHTML = PR.icon("back", "sm") + "<span>" + PR.esc(label()) + "</span>" + (stack.length > 1 ? "<em>" + stack.length + "</em>" : "");
-    btn.hidden = false;
+    group.hidden = dismissed;
   }
   function goBack() {
     const s = stack.pop();
@@ -47,15 +54,15 @@
       el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
     } else if (el) window.scrollTo({ top: scrollY + el.getBoundingClientRect().top - s.off, behavior: "smooth" });  // 不知道：回到原来的位置，不乱高亮
     else window.scrollTo({ top: s.y, behavior: "smooth" });
-    if (stack.length) show(); else btn.hidden = true;
+    if (stack.length) show(); else group.hidden = true;
   }
   window.addEventListener("popstate", () => { if (stack.length) goBack(); });
 
   /* 自己滚回原处了，按钮就收起来 */
   window.addEventListener("scroll", PR.debounce(() => {
     const s = stack[stack.length - 1];
-    if (!s || !btn || btn.hidden) return;
+    if (!s || !group || group.hidden) return;
     const el = document.getElementById("b-" + s.id);
-    if (el && Math.abs(el.getBoundingClientRect().top - s.off) < innerHeight * 0.4) { stack.pop(); if (stack.length) show(); else btn.hidden = true; }
+    if (el && Math.abs(el.getBoundingClientRect().top - s.off) < innerHeight * 0.4) { stack.pop(); if (stack.length) show(); else group.hidden = true; }
   }, 300), { passive: true });
 })(window.PR);

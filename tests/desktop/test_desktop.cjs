@@ -15,13 +15,18 @@ async function desktop(platform = "darwin", lock = true, ready = true, argv = []
     quit() { this.quitCalled = true; this.emit("before-quit", { preventDefault() {} }); },
     relaunch() { this.relaunched = true; }, exit() { this.exited = true; },
   });
-  const windows = [], launches = [], menus = [], stages = [], handlers = new Map();
-  const ipcMain = { handle(name, fn) { handlers.set(name, fn); } };
+  const windows = [], launches = [], menus = [], stages = [], requests = [], handlers = new Map();
+  const ipcMain = new EventEmitter();
+  ipcMain.handle = (name, fn) => handlers.set(name, fn);
   class Window extends EventEmitter {
     constructor(options) { super(); this.options = options; this.webContents = new EventEmitter(); this.webContents.setWindowOpenHandler = () => {};
       this.webContents.setZoomFactor = factor => { this.webContents.zoomFactor = factor; };
       this.webContents.getZoomFactor = () => this.webContents.zoomFactor;
-      this.webContents.mainFrame = { url: "http://127.0.0.1:9876/" }; windows.push(this); }
+      this.webContents.mainFrame = { url: "http://127.0.0.1:9876/" };
+      this.webContents.isDestroyed = () => false;
+      // 页面收到保存请求后回执，模拟退出前等待阅读进度落盘。
+      this.webContents.send = channel => { requests.push("asked:" + channel); queueMicrotask(() => ipcMain.emit("easyread:page-saved", { sender: this.webContents, senderFrame: this.webContents.mainFrame })); };
+      windows.push(this); }
     static getAllWindows() { return windows.filter(w => !w.closed); }
     async loadURL(url) { this.url = url; }
     show() { this.shown = true; }
@@ -29,7 +34,11 @@ async function desktop(platform = "darwin", lock = true, ready = true, argv = []
     setFullScreen(value) { this.fullScreen = value; }
     isFullScreen() { return !!this.fullScreen; }
     isMinimized() { return false; }
-    close() { this.closed = true; this.emit("closed"); }
+    close() {
+      let prevented = false;
+      this.emit("close", { preventDefault() { prevented = true; } });
+      if (!prevented) { this.closed = true; this.emit("closed"); }
+    }
   }
   const Menu = {
     buildFromTemplate(items) { return { items, popup() { menus.push(items); } }; },
@@ -53,6 +62,7 @@ async function desktop(platform = "darwin", lock = true, ready = true, argv = []
     dialog: { showErrorBox() {}, showOpenDialog: async () => ({ canceled: false, filePaths: ["/tmp/chosen"] }) }, shell: {} }
     : name === "child_process" ? childProcess : name === "fs" ? { existsSync: () => true }
     : name === "http" ? { request(url, options, callback) {
+      requests.push(url.pathname);
       const req = new EventEmitter(); req.setTimeout = () => {}; req.end = () => queueMicrotask(() => {
         const res = new EventEmitter(); res.statusCode = 200; res.setEncoding = () => {}; callback(res);
         res.emit("data", JSON.stringify(url.pathname === "/api/library" ? { token: "test-token" } : { ok: true }));
@@ -77,7 +87,7 @@ async function desktop(platform = "darwin", lock = true, ready = true, argv = []
   vm.runInNewContext(source, { require: fakeRequire, process: proc, __dirname: "/tmp/electron", setTimeout, clearTimeout, console });
   const settled = () => new Promise(resolve => setImmediate(resolve));
   await settled();
-  return { app, windows, launches, menus, handlers, stages, settled };
+  return { app, windows, launches, menus, handlers, stages, requests, ipcMain, settled };
 }
 
 test("startup survives a missing appData path instead of crashing the main process", async () => {
@@ -146,6 +156,32 @@ test("desktop zoom shortcuts persist through navigation and F11 toggles fullscre
   input("F11", "F11", false);
   assert.equal(win.isFullScreen(), false);
   d.app.quit();
+});
+
+test("quitting asks the page to save before stopping the backend", async () => {
+  const d = await desktop("win32");
+  d.app.quit();
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const order = d.requests.filter(x => x.startsWith("asked:") || x === "/api/shutdown");
+  assert.deepEqual(Array.from(order), ["asked:easyread:before-quit", "/api/shutdown"]);
+});
+
+test("Windows close button saves before the renderer is destroyed", async () => {
+  const d = await desktop("win32");
+  d.windows[0].close();
+  assert.notEqual(d.windows[0].closed, true);
+  await d.settled();
+  const order = d.requests.filter(x => x.startsWith("asked:") || x === "/api/shutdown");
+  assert.deepEqual(Array.from(order), ["asked:easyread:before-quit", "/api/shutdown"]);
+});
+
+test("quitting goes ahead when the page never answers", async () => {
+  const d = await desktop("win32");
+  d.windows[0].webContents.send = () => {};  // 页面卡住，一声不吭
+  d.app.quit();
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  assert.ok(d.requests.includes("/api/shutdown"), "不该卡在退出上");
+  assert.equal(d.launches[0].child.killed, true);
 });
 
 test("the startup window is visible while the backend is still starting", async () => {

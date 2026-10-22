@@ -1,5 +1,6 @@
 """界面语言：系统语言判断、tr 填占位符、页面注入词典，以及所有界面文字都有英文。  python -m unittest tests.app.test_i18n"""
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -19,7 +20,7 @@ class I18nTest(unittest.TestCase):
         i18n.system_lang.cache_clear()
 
     def test_system_lang_from_electron(self):
-        for tag, want in (("zh-CN", "zh"), ("zh-TW", "zh"), ("en-US", "en"), ("de", "en"), ("ja", "en")):
+        for tag, want in (("zh-CN", "zh"), ("zh-TW", "zh-Hant"), ("zh-HK", "zh-Hant"), ("zh-Hant", "zh-Hant"), ("zh-Hans-HK", "zh"), ("en-US", "en"), ("de", "en"), ("ja", "en")):
             i18n.system_lang.cache_clear()
             with mock.patch.dict(os.environ, {"EASYREAD_SYSTEM_LANG": tag}):
                 self.assertEqual(i18n.system_lang(), want, tag)
@@ -57,6 +58,17 @@ class I18nTest(unittest.TestCase):
     def test_every_ui_string_has_english(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts" / "i18n_check.py")], capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stdout[-3000:])
+
+    def test_traditional_interface_dictionary_and_injection(self):
+        traditional = i18n.ui_dict("zh-Hant")
+        for key in i18n.en_dict():
+            self.assertTrue(traditional.get(key), key)
+            self.assertEqual(re.findall(r"\{\w+\}", key), re.findall(r"\{\w+\}", traditional[key]), key)
+        with mock.patch.object(i18n, "lang", lambda: "zh-Hant"):
+            self.assertEqual(i18n.tr("设置"), "設定")
+        out = i18n.inject('<html lang="zh-CN"><head><title>EasyRead</title></head>', "zh-Hant")
+        self.assertIn('<html lang="zh-Hant"', out)
+        self.assertIn('id="pr-i18n"', out)
 
 
 if __name__ == "__main__":

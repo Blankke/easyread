@@ -17,6 +17,7 @@ import threading
 
 from . import pdfwork
 from ..app.log import log
+from ..library.store import Workspace
 
 _running: set[str] = set()
 
@@ -38,7 +39,7 @@ def figure_box(value) -> list[float] | None:
 
 
 def _crop_path(root, page: int, box: list[float]) -> str:
-    source = (root / "source.pdf").stat()
+    source = Workspace(root).source_pdf.stat()
     identity = json.dumps([page, box, source.st_size, source.st_mtime_ns])
     name = f"crop-{page}-{hashlib.sha256(identity.encode()).hexdigest()[:20]}"
     return f"figures/{name}.webp"

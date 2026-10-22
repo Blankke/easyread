@@ -167,7 +167,8 @@ def check(ws, cfg: dict, pages: list[int], cancel, meter, journal, lock) -> int:
         journal(ws, tr("术语一致性检查：没有发现不一致"))
         return 0
     name = langs.prompt_name(langs.of_paper(paper.get("meta")))
-    data = engines.parse_json(engines.run(cfg, prompts.consistency(items, agree, name), ws.root, None, cancel, meter))
+    from .instructions import apply
+    data = engines.parse_json(engines.run(cfg, apply(prompts.consistency(items, agree, name), cfg), ws.root, None, cancel, meter))
     data = data if isinstance(data, dict) else {}
     asked = {t["en"]: t["want"] for it in items for t in it["terms"]}
     use = {en: _clean(v) for en, v in (data.get("use") or {}).items() if en in asked and len(_clean(v)) >= 2}

@@ -6,16 +6,24 @@ import re
 
 from . import langs, sentences
 from ..library.store import Workspace
+from ..pdf import links
+
+MATH_RULES = r"""- 行内数学一律写成 $TeX$（KaTeX 能渲染的 LaTeX）：即使只有一个变量，也必须有成对的 $；变量、下标、上标都用 TeX，不要直接照抄 PDF 抽取出的散乱字符或用 Unicode 拼。
+- en 和 zh、标题、列表、表头、单元格、图内文字及题注都遵守同一公式规则。例如：原文 "Let $x_i \in \mathbb{R}^d$."，译文 "令 $x_i \in \mathbb{R}^d$。"；不要输出裸露的 x_i、\alpha 或 \frac{a}{b}，不要把整句正文包进 $。
+- 行间公式单独成 math 块，tex 只放公式内容（不带 $、$$ 或 \[\]），照原页保留上下标、分式、矩阵和运算符，原编号放 tag。看不清时标明待核对，不猜公式。
+- 代码围栏、行内代码、路径和网址保持原样，不为其中的符号添加数学定界符；普通金额的美元符号写成 \$。输出前逐项检查公式是否有定界符、是否成对，JSON 中的 TeX 反斜杠必须写两个。"""
 
 RULES = """翻译要求：
 - 材料是用户提供的论文，本任务用于用户本人的学术阅读、学习与引用。按要求完整翻译提供的内容并保留结构，不要用摘要或概述代替逐块译文。
 - 忠实：保留原文的论证顺序、章节编号、公式、表格、引用号 [n]、限定词（may/suggest/likely/at least）、否定和比较对象。可以调整中文语序、拆长句，读起来要像中文母语者写的学术文字。
 - 只翻译，不解释、不总结、不加原文没有的内容。原文的笔误照录，不要改。
+- 保留材料中的 Markdown 链接 [文字](URL)：原文保留链接文字，译文翻译链接文字，两边 URL 必须原样保留，不猜网址，不把链接移到段落外。
 - 但要留心原文自己的问题：数字前后对不上（表和正文、两张表之间）、公式和文字说的不一致、符号用错、明显的笔误。发现了就写进 checks，正文照录不改；没有就不写，不要为了写而写，也不要写翻译说明。
 - 术语全文统一；首次出现的核心术语写“中文（English）”。已有术语表必须遵守。统计学里 standard error 译“标准误差”。
-- 行内数学一律写成 $TeX$（KaTeX 能渲染的 LaTeX），变量、下标、上标都要用 TeX，不要用 Unicode 拼。行间公式单独成 math 块，照原页重排，原编号放 tag。
+""" + MATH_RULES + """
 - 表格重排成 table 块，表头译成中文，数字原样。图用 figure 块：尽量给出图在原页中的归一化裁剪框 `box:[x0,y0,x1,y1]`（左上和右下坐标，范围 0 到 1，框住图本身、不含题注），并翻译图内可读的标题、坐标轴、图例、流程框文字和标签到 `image_zh`（使用目标语言），原文写入 `image_en`；没有原页图时不猜裁剪框，看不清或没有文字就留空，不猜。`src` 留空，由程序按 `box` 从原 PDF 裁图。
 - 参考文献列表不翻译：输出一个 references 块，条目放进 references 数组（id 是编号，text 是原文）。
+- 脚注与参考文献独立：文献引用使用 [13]，脚注标记使用 [^13]（13 换成原编号），en/zh 两边保持一致，不要混用。脚注内容单独输出 para 块，加 "role":"footnote","num":"13"，page 填脚注所在页；块的 en/zh 只放脚注正文，不重复编号。脚注不得放入 references 数组，也不能当页脚丢弃。同号文献与脚注可以同时存在；不确定时保留原标记，不猜。
 - 代码和伪代码用 para 块，en/zh 中用 Markdown 代码围栏包住代码，保留缩进、换行、标识符和字符串；只翻译题注及自然语言注释。题注放在围栏外，不要输出 code 或 listing 类型，不要在代码里插句子分界 ‖。
 - 看不清的地方写“此处识别不清，请核对原文第 N 页”，不要猜。
 - 页眉、页脚、页码、arXiv 侧边水印不要输出。"""
@@ -106,6 +114,8 @@ _NOTE_PLAIN = re.compile(r"^\s*\d{1,2}\s?[A-Z][a-z]")
 
 
 def _is_note(b: dict) -> bool:
+    if b.get("role") == "footnote":
+        return True
     text = b.get("en") or ""
     if _NOTE.search(text):
         return True
@@ -164,9 +174,11 @@ def _context(ws: Workspace, pages: list[int], new_blocks: bool = True, skip_head
 
 def _page_texts(ws: Workspace, pages: list[int]) -> str:
     texts = []
+    urls = links.ensure(ws)
     for n in pages:
         p = ws.root / "extract" / f"page-{n:03d}.txt"
-        texts.append(f"===== 第 {n} 页（抽取的文字，公式和表格可能是乱的）=====\n" + (p.read_text(encoding="utf-8") if p.exists() else ""))
+        text = p.read_text(encoding="utf-8") if p.exists() else ""
+        texts.append(f"===== 第 {n} 页（抽取的文字，公式和表格可能是乱的）=====\n" + links.insert(text, urls.get(str(n), [])))
     return "\n\n".join(texts)
 
 
@@ -224,6 +236,7 @@ def consistency(items: list[dict], agree: dict[str, int], target_name: str) -> s
 
 def repair(original_json: str, problems: list[str]) -> str:
     return ("下面这份论文翻译 JSON 有问题，请修好后输出完整的 JSON（格式不变，只输出 JSON）：\n"
+            "只修列出的问题，保留所有块、键、正文和公式含义。缺公式定界符时给完整公式补上 $TeX$，不要删除公式或把整句正文包进去；JSON 中 TeX 反斜杠写两个。\n"
             + "\n".join(f"- {p}" for p in problems[:30]) + "\n\nJSON：\n" + original_json)
 
 
@@ -260,6 +273,7 @@ def answer(ws: Workspace, note: dict) -> str:
 
 def retranslate(ws: Workspace, key: str, hint: str) -> tuple[str, tuple | None]:
     """返回（提示词，段落和列表项的（英文, 句尾）或 None）：英文按句插好 ‖，新译文照着插，重译后句子还对得上。"""
+    links.refresh(ws)
     paper = ws.load("paper")
     bid, _, field = key.partition("#")
     blocks = paper.get("blocks", [])

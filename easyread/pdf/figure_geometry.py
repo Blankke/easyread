@@ -11,6 +11,7 @@ from . import figure_pixels, page_margins
 from .figures import figure_box
 from .paragraph_regions import matched_body_words
 from ..app.log import log
+from ..library.store import Workspace
 
 
 def _bounds(boxes):
@@ -326,9 +327,12 @@ def locate_figures(root: Path, blocks: list[dict], layout: dict) -> dict[str, di
     # Keep fixed captions as blockers only on pages with a figure that needs work.
     by_page = {pn: captions for pn, captions in by_page.items()
                if any(c["type"] == "figure" and not c["fixed"] for c in captions.values())}
-    if not by_page or not (root / "source.pdf").is_file():
+    if not by_page:
         return {}
-    unsafe = _unsafe_pages(root / "source.pdf", by_page)
+    source = Workspace(root).source_pdf
+    if not source.is_file():
+        return {}
+    unsafe = _unsafe_pages(source, by_page)
     by_page = {pn: captions for pn, captions in by_page.items() if pn not in unsafe}
     if not by_page:
         return {}
@@ -336,7 +340,7 @@ def locate_figures(root: Path, blocks: list[dict], layout: dict) -> dict[str, di
 
     result = {}
     try:
-        with pdfplumber.open(root / "source.pdf") as pdf:
+        with pdfplumber.open(source) as pdf:
             running = page_margins.running_lines(root / "extract", len(pdf.pages))
             for pn, captions in by_page.items():
                 if not any(c["type"] == "figure" for c in captions.values()) or not 1 <= pn <= len(pdf.pages):
@@ -346,7 +350,7 @@ def locate_figures(root: Path, blocks: list[dict], layout: dict) -> dict[str, di
                     {bid: loc for bid, loc in layout.items() if bid not in caption_ids}, pn)]
                 def render(erase, pn=pn):
                     try:
-                        return figure_pixels.visible_mask(root / "source.pdf", pn - 1, erase)
+                        return figure_pixels.visible_mask(source, pn - 1, erase)
                     except Exception:  # noqa: BLE001
                         log.exception("渲染原页失败 %s 第 %s 页", root, pn)
                         return None

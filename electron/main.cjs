@@ -246,6 +246,26 @@ async function stopBackendGracefully() {
   });
 }
 
+/* 退出前先让页面把没落盘的东西写回去再停后端；页面没应就照常退出 */
+function savePageState() {
+  const wc = mainWindow && mainWindow.webContents;
+  if (!wc || wc.isDestroyed()) return Promise.resolve();
+  return new Promise(resolve => {
+    let timer;
+    function done() {
+      clearTimeout(timer);
+      ipcMain.removeListener("easyread:page-saved", saved);
+      resolve();
+    }
+    function saved(event) {
+      if (event.sender === wc && event.senderFrame === wc.mainFrame) done();
+    }
+    timer = setTimeout(done, 1200);
+    ipcMain.on("easyread:page-saved", saved);
+    wc.send("easyread:before-quit");
+  });
+}
+
 function trustedWindow(event) {
   if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
       !backendUrl || new URL(event.senderFrame.url).origin !== backendUrl) {
@@ -342,8 +362,18 @@ async function createWindow() {
     if (state.maximized) openingWindow.maximize();
     openingWindow.show();
   });
-  mainWindow.on("closed", () => { chatgptWeb = undefined; clearTimeout(webPollTimer); clearTimeout(webHeartbeatTimer);
-    mainWindow = undefined; });
+  mainWindow.on("close", event => {
+    if (process.platform !== "darwin" && !quitting && backend) {
+      event.preventDefault();
+      app.quit();  // before-quit saves while the renderer is still alive.
+    }
+  });
+  mainWindow.on("closed", () => {
+    chatgptWeb = undefined;
+    clearTimeout(webPollTimer);
+    clearTimeout(webHeartbeatTimer);
+    mainWindow = undefined;
+  });
   try {
     await openingWindow.loadURL(startup.loadingUrl(isZh()));
     if (mainWindow !== openingWindow || quitting) return;
@@ -405,7 +435,7 @@ if (!app.requestSingleInstanceLock()) {
     clearTimeout(webHeartbeatTimer);
     if (!backend) return;
     event.preventDefault();
-    stopBackendGracefully().catch(stopBackend).finally(() => app.quit());
+    savePageState().then(stopBackendGracefully).catch(stopBackend).finally(() => app.quit());
   });
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();

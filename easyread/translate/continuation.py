@@ -38,11 +38,12 @@ def _source(ws: Workspace, batch: list[int]) -> str | None:
     """文字吻合不能证明图形也已处理；只接受可核对的纯文本 PDF 页。"""
     import pypdfium2 as pdfium
 
-    if not (ws.root / "source.pdf").exists():
-        return None
     parts = []
     try:
-        with pdfwork.open_pdf(ws.root / "source.pdf") as doc:
+        source = ws.source_pdf
+        if not source.exists():
+            return None
+        with pdfwork.open_pdf(source) as doc:
             for n in batch:
                 path = ws.root / "extract" / f"page-{n:03d}.txt"
                 if not path.exists():

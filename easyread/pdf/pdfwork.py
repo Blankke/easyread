@@ -105,7 +105,7 @@ def _char_box(box, bounds, rotation: int) -> list[float] | None:
 
 def crop(root: Path, page: int, box: list[float], out_name: str, scale: float = 3.0) -> str:
     """box 是按页宽高归一化的 [x0, y0, x1, y1]；输出到 figures/，返回相对路径。"""
-    with open_pdf(root / "source.pdf") as doc:
+    with open_pdf(Workspace(root).source_pdf) as doc:
         with closing(doc[page - 1]) as pdf_page, closing(pdf_page.render(scale=scale)) as bitmap:
             with bitmap.to_pil() as raw, raw.convert("RGB") as img:
                 W, H = img.size
@@ -324,7 +324,7 @@ def engine_image(root: Path, n: int) -> Path:
     with _PDFIUM_LOCK:
         if not out.exists():
             out.parent.mkdir(parents=True, exist_ok=True)
-            with open_pdf(root / "source.pdf") as doc:
+            with open_pdf(Workspace(root).source_pdf) as doc:
                 with closing(doc[n - 1]) as page, closing(page.render(scale=2.0)) as bitmap:
                     with bitmap.to_pil() as raw, raw.convert("RGB") as img:
                         img.save(out, "JPEG", quality=82)
@@ -363,6 +363,7 @@ def warm_variants(root: Path, width: int = PANEL_WIDTH) -> None:
 
 def prepare(root: Path) -> list[dict]:
     """渲染原页 + 抽文字，返回 meta.pages。"""
-    pages = render_pages(root / "source.pdf", root / "pages")
-    extract_text(root / "source.pdf", root / "extract")
+    source = Workspace(root).source_pdf
+    pages = render_pages(source, root / "pages")
+    extract_text(source, root / "extract")
     return pages

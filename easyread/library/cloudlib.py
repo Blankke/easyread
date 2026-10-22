@@ -128,6 +128,11 @@ def inspect(path: str | Path, *, exact: bool = False) -> dict:
 
 
 def _sha(paper: Path) -> str:
+    # Do not read external PDFs during library migration.
+    meta = (read_json(paper / "paper.json", {}) or {}).get("meta", {})
+    if meta.get("source_pdf_path"):
+        digest = meta.get("source_sha256", "")
+        return digest if isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest) else ""
     pdf = paper / "source.pdf"
     if not pdf.exists():
         return ""

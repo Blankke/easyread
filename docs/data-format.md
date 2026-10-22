@@ -84,8 +84,10 @@ JSON 里 TeX 的反斜杠要写两个（`\\frac`）。`\f` `\b` `\t` `\n` `\r` �
                     "kind": "note | question | highlight", "color": "yellow | green | blue | pink",
                     "body": "…", "created": "…", "updated": "…", "deleted": false } },
   "paper_note": { "body": "整篇的论文笔记", "at": "…" },
-  "progress": { "block": "s3-1-p2", "ratio": 0.35, "at": "…" } }
+  "progress": { "block": "s3-1-p2", "off": 0.4, "ratio": 0.35, "at": "…" } }
 ```
+
+读到哪儿：`block` 是视口上部 30% 那条线穿过的块，`off` 是那条线在这个块里占的比例（块有几屏高时靠它落回原处），`ratio` 是全文比例，文献库列表上的百分比用它。1.4.2 及以前只有 `block` 和 `ratio`。
 
 编辑的键：普通块是块 id，表/图题注是 `id#caption`，列表项是 `id#序号`。页面只通过 `/api/p/ID/ops` 发操作（`edit`、`note`、`note_del`、`paper_note`、`progress`），每个操作幂等、带时间戳，同一对象以较新的为准；服务端加锁、原子写、记日志。离线版导出的修改用 `easyread merge ID --from 导出.json` 并回。
 

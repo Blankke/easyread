@@ -70,6 +70,8 @@ function page(url = "http://127.0.0.1:8765/", storage = new Map(), state = null,
       return Promise.resolve(data).then(value => ({ ok: true, status: 200, json: async () => value }));
     },
   };
+  context.katex = require("../../easyread/web/vendor/katex/katex.min.js");
+  vm.runInNewContext(source("common/markup.js"), context);
   vm.runInNewContext(source("common/library-nav.js"), context);
   const p = { PR, location, history, storage, node, listeners, windowEvents, requests,
     get rows() { return rows; }, setItems(value) { items = value; },

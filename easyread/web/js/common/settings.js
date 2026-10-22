@@ -153,6 +153,7 @@
       const c = state.cfg, o = c.openai;
       return { engine: c.engine, batch_pages: c.batch_pages, concurrency: c.concurrency, page_cap: c.page_cap, auto_translate: c.auto_translate,
         chatgpt_web: { ...c.chatgpt_web, model: (c.chatgpt_web || {}).model || "", batch_pages: (c.chatgpt_web || {}).batch_pages || 4 },
+        translation_instructions: c.translation_instructions || "",
         paper_concurrency: Number.isInteger(c.paper_concurrency) ? Math.max(1, Math.min(4, c.paper_concurrency)) : 1,
         claude: { model: c.claude.model, command: c.claude.command, reasoning_effort: c.claude.reasoning_effort || "" },
         codex: { model: c.codex.model, command: c.codex.command, reasoning_effort: c.codex.reasoning_effort || "", service_tier: c.codex.service_tier || "" },

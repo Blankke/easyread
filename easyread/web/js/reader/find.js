@@ -5,7 +5,7 @@
   panel.innerHTML = '<input class="input" type="search" aria-label="' + PR.t("搜索原文与译文") + '" placeholder="' + PR.t("搜索原文与译文") + '"><span class="find-count" role="status"></span><button class="btn" data-prev aria-label="' + PR.t("上一个结果") + '">↑</button><button class="btn" data-next aria-label="' + PR.t("下一个结果") + '">↓</button><button class="btn" data-close aria-label="' + PR.t("关闭") + '">×</button>';
   document.body.append(panel);
   const input = panel.querySelector("input"), count = panel.querySelector(".find-count");
-  let hits = [], active = -1;
+  let hits = [], active = -1, returnFocus = null;
   function paint() {
     count.textContent = hits.length ? (active + 1) + " / " + hits.length : "0 / 0";
     panel.querySelector("[data-prev]").disabled = panel.querySelector("[data-next]").disabled = !hits.length;
@@ -50,10 +50,13 @@
   function close() {
     panel.hidden = true;
     if (window.CSS && CSS.highlights) { CSS.highlights.delete("reader-find"); CSS.highlights.delete("reader-find-active"); }
-    PR.$("#findBtn").focus();
+    if (returnFocus?.isConnected) returnFocus.focus();
+    else input.blur();
   }
-  function open() { panel.hidden = false; search(); input.focus(); input.select(); }
-  PR.$("#findBtn").onclick = open;
+  function open() {
+    if (panel.hidden) returnFocus = document.activeElement;
+    panel.hidden = false; search(); input.focus(); input.select();
+  }
   input.oninput = () => { search(); move(1); };
   panel.querySelector("[data-prev]").onclick = () => move(-1);
   panel.querySelector("[data-next]").onclick = () => move(1);

@@ -28,6 +28,7 @@ DEFAULTS = {
     "engine": "claude",          # claude | codex | codebuddy | grok | agy | cursor（本机 CLI 无头）| openai（任意 OpenAI 兼容接口）| none
     "auto_translate": True,      # 导入后自动开始翻译
     "target": "zh",              # 译文语言，见 langs.py
+    "translation_instructions": "",
     "check_updates": True,       # 打开文献库时问 GitHub 有没有新版本（一天一次），见 updates.py
     "batch_pages": 2,            # 每次交给模型的页数
     "paper_concurrency": 1,      # 默认逐篇处理；手动设1-4，重启生效，会与每篇的分段并发相乘

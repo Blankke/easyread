@@ -42,6 +42,7 @@ body { font-size: 15px; }
 
 }
 #paper { grid-column: 2; min-width: 0; font-family: var(--serif-zh); line-height: var(--lh); letter-spacing: .012em; font-variant-numeric: lining-nums; }
+#paper.landing { visibility: hidden; }  /* 回到上次读到的地方期间先不显示正文 */
 #margin { grid-column: 4; position: relative; font-size: 15px; }
 :root[data-theme="dark"] #paper { font-weight: 330; }
 :root[data-theme="dark"] #paper :is(h1, h2, h3, strong, th, .label) { font-weight: 600; }
@@ -178,9 +179,6 @@ mark.hl.s-ul.c-pink { box-shadow: inset 0 -2.5px 0 var(--ul-pink); }
 .pens { display: inline-flex; gap: 2px; padding: 2px; border-radius: 8px; background: color-mix(in srgb, var(--rule) 55%, transparent); margin-right: 6px; }
 .pens button { width: 26px; height: 24px; border-radius: 6px; display: grid; place-items: center; color: var(--ink-3); }
 .pens button.on { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.1); }
-.dots.pen-underline button { border-radius: 2px; height: 5px; margin-top: 8px; }
-.dots.pen-underline .dot-yellow { background: var(--ul-yellow); } .dots.pen-underline .dot-green { background: var(--ul-green); }
-.dots.pen-underline .dot-blue { background: var(--ul-blue); } .dots.pen-underline .dot-pink { background: var(--ul-pink); }
 .hl-edit { display: flex; align-items: center; margin: 4px 0 8px; }
 mark.hl.q { box-shadow: inset 0 -.14em 0 color-mix(in srgb, var(--mine) 65%, transparent); }
 mark.hl.agent { background: transparent; box-shadow: inset 0 -.12em 0 color-mix(in srgb, var(--accent) 45%, transparent); cursor: default; }
@@ -291,3 +289,13 @@ textarea.editor { display: block; width: 100%; resize: none; overflow: hidden; b
 @media (max-width: 760px) { .demo-pill span { display: none; } }
 .demo-credit { font-size: 12.5px; color: var(--ink-3); margin: 8px 0 0; line-height: 1.7; }
 .demo-credit a { color: var(--ink-2); }
+
+/* Original PDF pages keep their image and receive a transparent selection layer. */
+.pdf-page-surface { position: relative; }
+.pdf-text-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
+.pdf-text-content { position: absolute; left: 0; top: 0; transform-origin: 0 0; color: transparent; font-family: sans-serif; }
+.pdf-text-content span { position: absolute; white-space: pre; transform-origin: 0 0; cursor: text; user-select: text; }
+.pdf-text-content span::selection { color: transparent; background: rgba(70, 130, 220, .35); }
+.blk.footnote { font-size: .88em; color: var(--ink-2); padding-left: 1.6em; border-left: 2px solid var(--ink-3); }
+.footnote-label { position: absolute; left: .3em; }
+.footnote-ref { text-decoration: none; cursor: pointer; }

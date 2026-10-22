@@ -103,7 +103,7 @@ def merge_blocks(ws: Workspace, data: dict, done=None, replace_pages=None, en_on
         if data.get("meta"):
             meta = paper.setdefault("meta", {})
             for k, v in data["meta"].items():
-                if v and k not in ("pages", "source_sha256", "pdf", "page_count"):
+                if v and k not in ("pages", "source_sha256", "pdf", "page_count", "source_pdf_path"):
                     meta[k] = v
         tr = paper.setdefault("translation", {})
         if data.get("translation"):

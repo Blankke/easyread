@@ -69,4 +69,4 @@ def reply_lang(meta: dict | None) -> str:
     if meta.get("title_zh"):  # 1.3 以前译的论文没记语言，都是中文
         return "中文"  # i18n-ok 提示词
     from ..app import i18n
-    return "中文" if i18n.lang() == "zh" else "英文（English）"  # i18n-ok 提示词
+    return prompt_name(i18n.lang())

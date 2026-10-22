@@ -175,6 +175,8 @@
   });
   document.addEventListener("mouseout", (e) => { if (e.target.closest && e.target.closest("a.cite, a.xref")) { clearTimeout(hoverT); PR.hidePopoverSoon(); } });
   document.addEventListener("click", (e) => {
+    const footnote = e.target.closest("a.footnote-ref");
+    if (footnote) { e.preventDefault(); PR.jumpTo(footnote.dataset.footnote); return; }
     const a = e.target.closest("a.cite, a.xref");
     if (!a) return;
     e.preventDefault();
@@ -194,11 +196,53 @@
   }
 
   /* 所有跳转都用这个：目标放在屏幕正中（比一屏还高的才顶到上面），不被顶栏挡住 */
+  let cancelCentering = null;
   PR.centerOn = function (el, instant) {
-    const r = el.getBoundingClientRect(), bar = (PR.$("#bar") || {}).offsetHeight || 0;
-    const room = innerHeight - bar;
-    const top = r.height > room * 0.85 ? r.top - bar - 16 : r.top - bar - (room - r.height) / 2;
-    window.scrollTo({ top: scrollY + top, behavior: instant ? "auto" : "smooth" });
+    if (cancelCentering) cancelCentering();
+    // Deferred blocks change height during a long scroll. Keep the destination
+    // laid out and measure again after scrolling and late image/layout changes.
+    const host = el.closest("#paper .blk") || el;
+    const visibility = host.style.contentVisibility;
+    host.style.contentVisibility = "visible";
+    let settled = !!instant, stopped = false, idleTimer;
+    const destination = () => {
+      const r = el.getBoundingClientRect(), bar = (PR.$("#bar") || {}).offsetHeight || 0;
+      const room = innerHeight - bar;
+      const delta = r.height > room * 0.85 ? r.top - bar - 16 : r.top - bar - (room - r.height) / 2;
+      return Math.max(0, Math.min(document.documentElement.scrollHeight - innerHeight, scrollY + delta));
+    };
+    function align() {
+      if (stopped) return;
+      if (!el.isConnected) return stop();
+      const top = destination();
+      if (Math.abs(top - scrollY) > 2) window.scrollTo({ top, behavior: "instant" });
+    }
+    function settle() { settled = true; align(); }
+    function onScroll() {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(settle, 120); // Fallback for webviews without scrollend.
+    }
+    const observer = new ResizeObserver(() => { if (settled) align(); });
+    function stop() {
+      stopped = true;
+      clearTimeout(idleTimer); clearTimeout(fallback); clearTimeout(deadline);
+      observer.disconnect();
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("scrollend", settle);
+      ["wheel", "touchstart", "pointerdown", "keydown"].forEach(type => window.removeEventListener(type, stop, true));
+      host.style.contentVisibility = visibility;
+      cancelCentering = null;
+    }
+    const fallback = setTimeout(settle, 1400);
+    const deadline = setTimeout(stop, 2500);
+    observer.observe(el);
+    const paper = PR.$("#paper");
+    if (paper && paper !== el) observer.observe(paper);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("scrollend", settle, { passive: true });
+    ["wheel", "touchstart", "pointerdown", "keydown"].forEach(type => window.addEventListener(type, stop, { passive: true, capture: true }));
+    cancelCentering = stop;
+    window.scrollTo({ top: destination(), behavior: instant ? "instant" : "smooth" });
   };
 
   /* opts：noBack 不记返回点；instant 不要动画；noFlash 不闪 */

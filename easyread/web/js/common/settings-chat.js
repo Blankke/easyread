@@ -195,6 +195,7 @@
         '<label class="check"><input type="checkbox" data-k="chatgpt_web.rotate_enabled"' + (w.rotate_enabled !== false ? ' checked' : '') + '>' + PR.t("自动轮换翻译会话") + '</label>' +
         '<label class="check"><input type="checkbox" data-k="chatgpt_web.project_sync"' + (w.project_sync ? ' checked' : '') + '>' + PR.t("同步共享术语库到项目（实验性）") + '</label>';
     }
+    h += '<label class="field"><span>' + PR.t("翻译补充要求") + '</span><textarea class="input" data-k="translation_instructions" rows="3" maxlength="4000" placeholder="' + PR.t("例如：KV cache 保留英文，不翻译专业术语") + '">' + PR.esc(c.translation_instructions || "") + '</textarea><small>' + PR.t("自动保存，应用于之后的翻译和重译；不改变已有译文。") + '</small></label>';
     return h;
   }
   /* 页面上翻译那几项的值读回 cfg（存的时候 settings.js 从 cfg 取） */

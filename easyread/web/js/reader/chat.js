@@ -18,6 +18,8 @@
     : s === "xray" ? PR.t("精读：还原作者的出发点，分清承重和装饰，把关键公式落到能手算的例子，核对数字和对照条件；论文没有报告的就写没有报告。会把全文一起发给模型作依据，用量更多。")
     : PR.t("标准回答：直接、具体，能举例就举例。");
   Object.assign(st, { chatOptions: {}, effortOpen: false, catalog: null });
+  const imageDraft = PR.createChatImages(st, panel, render, () => focusInput());
+  const imagesHtml = imageDraft.html;
 
   PR.canChat = () => PR.store.mode === "server";
   /* 在线演示 / 离线版：带着对话记录时可以看，不能问 */
@@ -122,7 +124,7 @@
   }
   function msgHtml(m) {
     if (m.role === "user") {
-      return '<div class="cm user"><div class="bubble">' + PR.md(m.content, { cite: false, xref: false }) + "</div>" +
+      return '<div class="cm user"><div class="bubble">' + PR.md(m.content, { cite: false, xref: false }) + "</div>" + imagesHtml(m.images || [], false) +
         ((m.refs && m.refs.length ? m.refs : m.anchor ? [m] : []).filter((r) => PR.blockById[r.anchor])
           .map((r) => '<button class="cm-ctx" data-c="go" data-anchor="' + PR.esc(r.anchor) + '">' + PR.icon("link", "sm") + "<span>" + PR.esc(ctxLabel(r)) + "</span></button>").join("")) + "</div>";
     }
@@ -159,8 +161,10 @@
     const styleMenu = st.styleOpen ? '<div class="ch-menu">' + STYLES.map((s) => '<button data-c="style-pick" data-s="' + s + '" class="' + (s === st.answerStyle ? "on" : "") + '">' +
       "<b>" + styleLabel(s) + (s === st.answerStyle ? '<span class="ch-model-check">✓</span>' : "") + "</b><small>" + PR.esc(styleHint(s)) + "</small></button>").join("") + "</div>" : "";
     const modelTitle = m.engine === "chatgpt_web" ? PR.t("换模型和回答深度") : PR.t("换模型和思考强度");
+    const imageStatus = st.imageError || (st.imageLoading ? PR.t("正在读取图片…") : "");
     return '<div class="ch-compose">' + (chips ? '<div class="ch-chips">' + chips + "</div>" : "") +
-      '<textarea id="chatInput" rows="1" placeholder="' + PR.t("问点什么…") + '">' + PR.esc(st.draft) + "</textarea>" +
+      imagesHtml(st.images, true) + (imageStatus ? '<div class="ch-attach-status" role="' + (st.imageError ? 'alert' : 'status') + '">' + PR.esc(imageStatus) + '</div>' : '') +
+      '<textarea id="chatInput" rows="1" aria-label="' + PR.t("提问，可粘贴图片") + '" placeholder="' + (st.images.length ? PR.t("补充问题，或直接发送图片…") : PR.t("输入问题，或粘贴截图…")) + '">' + PR.esc(st.draft) + "</textarea>" +
       '<div class="ch-bar"><button class="ch-model" data-c="menu" title="' + modelTitle + '"' + (st.streaming ? ' disabled' : '') + '>' + PR.esc(m.label) + PR.chatEffort.suffix(st, m) + PR.icon("chevron", "sm") + "</button>" + style + styleMenu + menu +
       '<span class="grow"></span>' + PR.usageChip(st.limits, thread() && thread().messages, st.usageOpen) +
       (st.usageOpen ? PR.usagePop(st.limits, thread() && thread().messages) : "") + (st.streaming ? '<button class="ch-send stop" data-c="stop" title="' + PR.t("停止") + '">' + PR.icon("stop", "sm") + "</button>"
@@ -191,7 +195,9 @@
   /* ---------- 发送 ---------- */
   async function send(text, noteId, only) {
     text = (text || "").trim();
-    if (!text || st.streaming) return;
+    if (st.imageLoading || st.streaming || (!text && !st.images.length)) return;
+    const images = only ? [] : st.images.map(image => image.data);
+    if (!text && images.length) text = PR.t("请解释这张图片。");
     const refs = only || sendRefs();
     const c = refs[0] || null;
     const answerStyle = st.answerStyle;
@@ -202,20 +208,22 @@
     t.answer_style = answerStyle;
     t.model = modelId;
     t.chat_options = chatOptions;
-    const user = { role: "user", content: text, anchor: c ? c.anchor : null, quote: c ? c.quote : "", note: noteId || null, refs, answer_style: answerStyle };
+    const user = { role: "user", content: text, anchor: c ? c.anchor : null, quote: c ? c.quote : "", note: noteId || null, refs, answer_style: answerStyle, images };
     const msg = { role: "assistant", content: "", model: modelOf(modelId).label, answer_style: answerStyle };
     t.messages.push(user, msg);
     const ctrl = new AbortController();
     st.streaming = { ctrl, msg };
+    if (!only) { st.images = []; st.imageError = ""; }
     st.draft = ""; st.listOpen = false; st.menuOpen = false; st.effortOpen = false;
     if (PR.$("#chatInput")) PR.$("#chatInput").value = "";
     if (noteId) { PR.asking.add(noteId); PR.renderMargin(); }
     render();
     try {
-      if (modelOf(modelId).engine === "chatgpt_web" && PR.flushPending) await PR.flushPending();
+      if (modelOf(modelId).engine === "chatgpt_web" && PR.flushPending && !await PR.flushPending())
+        throw new Error(PR.t("阅读标记尚未保存，请稍后重试"));
       const res = await fetch("/api/p/" + PR.pid + "/chat", {
         method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json", "X-Token": PR.token || "" },
-        body: JSON.stringify({ thread: t.local ? null : t.id, text, anchor: user.anchor, quote: user.quote, refs, note: noteId || null, model: modelId, answer_style: answerStyle, chat_options: chatOptions }),
+        body: JSON.stringify({ thread: t.local ? null : t.id, text, anchor: user.anchor, quote: user.quote, refs, note: noteId || null, model: modelId, answer_style: answerStyle, chat_options: chatOptions, images }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "HTTP " + res.status);
       const reader = res.body.getReader(), dec = new TextDecoder();
@@ -242,6 +250,11 @@
       else msg.error = PR.t("没能回答：{msg}", { msg: e.message });
     }
     st.streaming = null;
+    if (msg.error && !only) {
+      st.images = images.map(data => ({data})).concat(st.images).slice(0, 4);
+      st.draft = PR.$("#chatInput")?.value || text;
+      if (PR.$("#chatInput")) PR.$("#chatInput").value = st.draft;
+    }
     // 首次提问在服务端分配 ID 前失败，也应能切到新对话或重试。
     if (!t.id) { t.id = "local-" + (++st.localSeq); t.local = true; st.cur = t.id; }
     t.updated = PR.nowIso();
@@ -263,8 +276,9 @@
     const c = b.dataset.c;
     const row = b.closest(".ch-thread[data-t]");
     if (c === "close") return PR.toggleChat(false);
+    if (c === "unimage") { st.images.splice(Number(b.dataset.i), 1); st.imageError = ""; render(); return focusInput(); }
     if (c === "list") { st.listOpen = !st.listOpen; st.menuOpen = st.styleOpen = false; return render(); }
-    if (c === "new") { if (st.streaming) return; st.chatOptions = {}; st.effortOpen = false; st.cur = null; st.listOpen = false; st.model = st.def; st.answerStyle = "standard"; st.styleOpen = false; st.refs = []; st.noAuto = false; autoContext(); render(); return focusInput(); }
+    if (c === "new") { if (st.streaming) return; st.chatOptions = {}; st.effortOpen = false; st.cur = null; st.listOpen = false; st.model = st.def; st.answerStyle = "standard"; st.styleOpen = false; st.refs = []; st.noAuto = false; imageDraft.reset(); st.draft = ""; if (PR.$("#chatInput")) PR.$("#chatInput").value = ""; autoContext(); render(); return focusInput(); }
     if (c === "style") { if (st.streaming) return; st.styleOpen = !st.styleOpen; st.menuOpen = st.listOpen = st.usageOpen = false; return render(); }
     if (c === "style-pick") {
       if (st.streaming) return;
@@ -308,7 +322,7 @@
       if (!(await PR.confirm({ title: PR.t("删除这个对话？"), body: PR.t("「{title}」。已经放到页边的讨论不受影响。", { title: t.title }), ok: PR.t("删除"), danger: true, at: row }))) return;
       if (!t.local) await PR.api("/api/p/" + PR.pid + "/chat/delete", { method: "POST", body: { thread: t.id } });
       st.threads = st.threads.filter((x) => x !== t);
-      if (st.cur === t.id) { st.cur = null; st.answerStyle = "standard"; }
+      if (st.cur === t.id) { imageDraft.reset(); st.cur = null; st.answerStyle = "standard"; }
       return render();
     }
     const card = b.closest(".cm.ai");
@@ -324,6 +338,7 @@
   document.addEventListener("click", (e) => {  // 点对话列表里的一行：切过去
     const row = e.target.closest("#chatpanel .ch-thread[data-t]");
     if (!row || e.target.closest("[data-c]") || st.streaming) return;
+    if (st.cur !== row.dataset.t) imageDraft.reset();
     st.cur = row.dataset.t; st.listOpen = false;
     const t = thread();
     if (t && t.model && st.models.some((m) => m.id === t.model)) st.model = t.model;
@@ -338,6 +353,7 @@
     if (e.key === "Escape") e.target.blur();
   });
   document.addEventListener("input", (e) => { if (e.target.id === "chatInput") PR.autosize(e.target); });
+
   /* 把正文里选中的文字拖进问 AI 面板：变成一段引用，而不是一堆粘进来的字 */
   let dragRef = null;
   document.addEventListener("dragstart", (e) => {

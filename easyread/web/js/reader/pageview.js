@@ -54,6 +54,8 @@
   }
   let pageNodes = [], pageSource = null;
   const scroller = PR.$(".pv-scroll");
+  PR.bindPageZoom?.((next) => zoomAt(next, scroller.getBoundingClientRect().left + scroller.clientWidth / 2,
+    scroller.getBoundingClientRect().top + scroller.clientHeight / 2), () => pvZoom);
   function loadPage(n) {
     const entry = pageNodes[n - 1];
     if (!entry) return;
@@ -77,7 +79,8 @@
       img.alt = "Page " + (i + 1); img.decoding = "async";
       hl.className = "pv-hl";
       node.replaceChildren(img, hl);
-      node.addEventListener("click", (e) => pickPage(e, i + 1));
+      PR.attachPdfText?.(node, img, i + 1);
+      node.addEventListener("click", (e) => { if (!PR.pdfTextSelectionIn?.(node)) pickPage(e, i + 1); });
       node.addEventListener("mousemove", (e) => {
         const r = node.getBoundingClientRect();
         node.classList.toggle("pickable", !!blockAt((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, i + 1));
@@ -102,33 +105,39 @@
     holdUntil = Date.now() + 2000;
   }
   ["pointerdown", "touchstart", "keydown"].forEach(type => scroller.addEventListener(type, claimPanelInput, { passive: true }));
-  // Ctrl＋滚轮只改变原页宽度；必须关闭 passive，才能阻止浏览器缩放整个界面。
-  scroller.addEventListener("wheel", (e) => {
-    if (!e.ctrlKey) { claimPanelInput(); return; }
-    e.preventDefault();
-    e.stopPropagation();
-    if (!pageNodes.length || !e.deltaY) return;
-    // 将行、页单位统一为像素，并限制单次幅度，兼顾鼠标滚轮和触控板。
-    const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? scroller.clientHeight : 1);
-    const next = Math.max(0.5, Math.min(4, pvZoom * Math.exp(-Math.max(-100, Math.min(100, delta)) * 0.002)));
+  // 缩放时固定指针或面板中心的原页内容，同时抑制一次由缩放触发的反向跟随。
+  function zoomAt(next, clientX, clientY) {
+    if (!pageNodes.length) return;
+    next = Math.max(0.5, Math.min(4, next));
     if (next === pvZoom) return;
-    const entry = pageNodes.find(p => p.node.getBoundingClientRect().bottom > e.clientY) || pageNodes[pageNodes.length - 1];
+    const entry = pageNodes.find(p => p.node.getBoundingClientRect().bottom > clientY) || pageNodes[pageNodes.length - 1];
     const before = entry.node.getBoundingClientRect();
-    const x = (e.clientX - before.left) / before.width;
-    const y = (e.clientY - before.top) / before.height;
+    const x = (clientX - before.left) / before.width;
+    const y = (clientY - before.top) / before.height;
     // 缩放引起的滚动不反向带动译文，也不被译文的跟随逻辑拉回。
     panelInput = false;
     programmaticUntil = Date.now() + 1500;
     holdUntil = Date.now() + 2000;
     pvZoom = next;
     scroller.style.setProperty("--pv-page-width", (pvZoom * 100) + "%");
+    PR.updatePageZoom?.(pvZoom);
     const after = entry.node.getBoundingClientRect();
     scroller.scrollTo({
-      left: scroller.scrollLeft + after.left + x * after.width - e.clientX,
-      top: scroller.scrollTop + after.top + y * after.height - e.clientY,
+      left: scroller.scrollLeft + after.left + x * after.width - clientX,
+      top: scroller.scrollTop + after.top + y * after.height - clientY,
       behavior: "instant",
     });
     loadNearby(pvPage);
+  }
+  // Ctrl＋滚轮只改变原页宽度；必须关闭 passive，才能阻止浏览器缩放整个界面。
+  scroller.addEventListener("wheel", (e) => {
+    if (!e.ctrlKey) { claimPanelInput(); return; }
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.deltaY) return;
+    // 将行、页单位统一为像素，并限制单次幅度，兼顾鼠标滚轮和触控板。
+    const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? scroller.clientHeight : 1);
+    zoomAt(pvZoom * Math.exp(-Math.max(-100, Math.min(100, delta)) * 0.002), e.clientX, e.clientY);
   }, { passive: false });
   scroller.addEventListener("scrollend", () => { programmaticUntil = 0; });
   // Switching back to the text must immediately return control to that pane.
@@ -264,6 +273,15 @@
     const loc = S.layout[id];
     showPage(loc ? loc.page : b.page, id);
   };
+
+  PR.$(".pv-follow input").addEventListener("change", (e) => {
+    if (!PR.$(".pv-follow input").checked) return;
+    // Reclaim control from a manually scrolled PDF, including the same text block.
+    panelInput = false;
+    holdUntil = 0;
+    pvBlock = null;
+    PR.syncPage(false);
+  });
 
   PR.$("#pageview").addEventListener("click", (e) => {
     const b = e.target.closest("[data-pv]");

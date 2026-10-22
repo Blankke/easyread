@@ -42,7 +42,9 @@ class MobileExportTest(unittest.TestCase):
         html, d = self.data(build(self.ws))
         self.assertEqual(set(d["images"]), {"pages/p1.webp", "pages/p2.webp", "pages/fig.webp"})
         self.assertEqual(len(d["discussion"]["entries"]), 1)
-        self.assertNotIn("mobile-read", html)
+        # Shared scripts may check mobile mode without enabling it in a full export.
+        self.assertNotIn('document.body.classList.add("mobile-read")', html)
+        self.assertNotIn("body.mobile-read", html)
 
 
 if __name__ == "__main__":

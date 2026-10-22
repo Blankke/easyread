@@ -8,10 +8,59 @@ function markup(realKatex = false) {
   const PR = {
     t: (s, v) => v ? s.replace(/\{(\w+)\}/g, (m, k) => v[k]) : s, esc: text => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../../easyread/web/js/common/markup.js"), "utf8"), {
-    window: { PR }, katex: realKatex ? require("../../easyread/web/vendor/katex/katex.min.js") : { renderToString: tex => '<math>' + PR.esc(tex) + '</math>' },
+    window: { PR }, URL, katex: realKatex ? require("../../easyread/web/vendor/katex/katex.min.js") : { renderToString: tex => '<math>' + PR.esc(tex) + '</math>' },
   });
   return PR;
 }
+
+test("title formulas render with real KaTeX while citations and HTML stay inert", () => {
+  const PR = markup(true);
+  PR.refById = { 13: { text: "Reference thirteen" } };
+  const html = PR.titleHtml(String.raw`$\mathrm{Harness}^{2}$ [13] <img src=x onerror=alert(1)>`);
+  assert.ok(html.includes('class="katex"'));
+  assert.ok(!html.includes('class="cite"'));
+  assert.ok(!html.includes('<img'));
+  assert.ok(html.includes('&lt;img'));
+  const body = PR.md("Text $^{13}$ and reference [13].");
+  assert.equal((body.match(/data-ref="13"/g) || []).length, 1);
+  assert.ok(body.includes('class="katex"'));
+});
+
+test("footnotes and same-number references have separate destinations", () => {
+  const PR = markup();
+  const blocks = [{id:"p2", page:2}, {id:"p3", page:3},
+    {id:"note2", type:"para", role:"footnote", num:"13", page:2},
+    {id:"note3", type:"para", role:"footnote", num:"13", page:3}];
+  PR.blockById = Object.fromEntries(blocks.map(b => [b.id, b]));
+  PR.buildFootnoteIndex(blocks);
+  PR.refById = {13: {}, 2: {}};
+  const html = PR.md("Footnote[^13], bibliography [13] and [2].", PR.footnoteOptions("p2"));
+  assert.ok(html.includes('href="#b-note2"'));
+  assert.ok(html.includes('data-ref="13"'));
+  assert.ok(html.includes('data-ref="2"'));
+  assert.ok(PR.md("[^13]", PR.footnoteOptions("p3")).includes('href="#b-note3"'));
+  assert.equal(PR.md("[^13]"), "<sup>13</sup>"); // ambiguous without a page
+  assert.equal(PR.md("[^99]"), "<sup>99</sup>"); // missing target never links to references
+  assert.equal(PR.md("`[^13]`"), "<code>[^13]</code>");
+  PR.buildFootnoteIndex([blocks[2]]);
+  assert.ok(PR.md("[^13]").includes('href="#b-note2"')); // unique note across pages
+  PR.buildFootnoteIndex([blocks[2], {...blocks[2],id:"duplicate"}]);
+  assert.equal(PR.md("[^13]", PR.footnoteOptions("p2")), "<sup>13</sup>");
+});
+
+test("inline external links preserve labels and URLs without linking code or unsafe schemes", () => {
+  const PR = markup();
+  const html = PR.md("Read [here](https://example.com/docs?q=1&lang=en), [此处](https://example.com/other), and `[here](https://example.com/code)`.");
+  assert.equal((html.match(/class=\"external-link\"/g) || []).length, 2);
+  assert.ok(html.includes('href="https://example.com/docs?q=1&amp;lang=en"'));
+  assert.ok(html.includes('rel="noopener noreferrer">here</a>'));
+  assert.ok(html.includes('<code>[here](https://example.com/code)</code>'));
+  assert.equal(PR.plain("Read [here](https://example.com/)"), "Read here");
+  for (const url of ["javascript:alert(1)", "data:text/html,evil", "file:///etc/passwd", "//example.com"]) {
+    assert.ok(!PR.md("[here](" + url + ")").includes("<a "));
+  }
+  assert.ok(PR.md('[<img src=x>](https://example.com/)').includes('&lt;img src=x&gt;'));
+});
 
 test("bilingual headings render without requiring blank lines before the answer", () => {
   const html = markup().mdBlocks("## English (ASD-STE100)\nThe device calculates $y=Wx$.\n## 中文解释\n器件计算 $y=Wx$。");
@@ -37,6 +86,19 @@ test("display math is extracted before paragraph splitting, including blank line
     assert.ok(html.includes('<div class="eq"><math>' + tex + '\n\n= I</math></div>'));
     assert.ok(html.includes("<p>取模后。</p>"));
     assert.ok(!html.includes(left));
+  }
+});
+
+test("titles preserve literal punctuation, links and code while rendering only math", () => {
+  const PR = markup(true);
+  const literal = 'A * B * C **D** [Benchmark](https://example.com) `$x$`';
+  assert.equal(PR.titleHtml(literal), literal);
+  for (const formula of ["$x$", "$$x$$", String.raw`\(x\)`, String.raw`\[x\]`]) {
+    const html = PR.titleHtml(literal + " " + formula);
+    assert.ok(html.startsWith(literal + " "));
+    assert.ok(html.includes('class="katex"'));
+    assert.ok(!html.includes('class="katex-display"'));
+    assert.ok(!html.includes("<a "));
   }
 });
 

@@ -5,11 +5,13 @@ from ..chat import chat_models
 from ..app import config
 from ..app.api_keys import resolve, saved_keys
 from ..engines import engines, openai_api
-from ..translate import langs
+from ..translate import langs, instructions
 from ..app.i18n import tr
 
 
 def save_config(patch: dict) -> dict:
+    if "translation_instructions" in patch:
+        patch["translation_instructions"] = instructions.validate(patch["translation_instructions"])
     patch.pop("library_dir", None)
     if "page_cap" in patch and (type(patch["page_cap"]) is not int or patch["page_cap"] < 0):
         raise ValueError(tr("页数确认上限必须是非负整数"))
