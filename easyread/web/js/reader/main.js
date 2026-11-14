@@ -3,6 +3,15 @@
   "use strict";
   const S = PR.state;
   const body = document.body;
+  PR.on("settings-saved", state => {
+    const enabled = state.cfg.figure_images?.enabled === true;
+    if (S.figure_images_enabled !== enabled) {
+      S.figure_images_enabled = enabled;
+      PR.hideBlockbar();
+      PR.rerenderKeepingPlace();
+    }
+  });
+  PR.on("figure-images-setting", () => { PR.hideBlockbar(); PR.rerenderKeepingPlace(); });
 
   /* 当前阅读的块：视口上部 30% 那条线穿过的块 */
   PR.readingLine = () => innerHeight * 0.3;
@@ -43,16 +52,23 @@
   document.addEventListener("keydown", (e) => {
     if (e.target.closest("textarea, input, [contenteditable]") || e.ctrlKey || e.metaKey || e.altKey) return;
     const k = e.key.toLowerCase();
-    if (PR.hasPendingSelection() && PR.keysOn) {
+    if (PR.keysOn) {
       // An active IME can report "Process" outside editors. Resolve physical
       // keys only here; keep the selected pen and existing modifier behavior.
       const digit = !e.shiftKey && { Digit1: "1", Digit2: "2", Digit3: "3", Digit4: "4" }[e.code];
       const selectionKey = digit || { KeyN: "n", KeyQ: "q" }[e.code] || k;
       const m = { 1: "yellow", 2: "green", 3: "blue", 4: "pink" }[selectionKey];
-      if (m) { e.preventDefault(); return PR.selectionAction("highlight", m); }
-      if (selectionKey === "n" || selectionKey === "q") { e.preventDefault(); return PR.selectionAction(selectionKey === "n" ? "note" : "question"); }
+      if (PR.hasPendingSelection()) {
+        if (m) { e.preventDefault(); return PR.selectionAction("highlight", m); }
+        if (selectionKey === "n" || selectionKey === "q") { e.preventDefault(); return PR.selectionAction(selectionKey === "n" ? "note" : "question"); }
+      } else if (m && !e.repeat) {
+        const swatch = document.querySelector('#popover.open [data-hl-color="' + m + '"]');
+        if (swatch) { e.preventDefault(); swatch.click(); return; }
+      }
     }
     if (k === "escape") {
+      if (e.defaultPrevented || e.repeat) return;
+      e.preventDefault();
       if (PR.$("#settings").classList.contains("open") || PR.$("#popover").classList.contains("open") || body.classList.contains("drawer-open")) {
         PR.toggleDrawer(false); PR.hidePopover(); PR.$("#settings").classList.remove("open");
       } else if (PR.currentBlock()) PR.setCurrent(null);
@@ -66,13 +82,28 @@
 
   /* ---------- 数据变化 ---------- */
   const busy = () => PR.editingKey || PR.editingNote || PR.noteMedia.isRenaming();
+  const highlightBlocks = new Set();
+  let refreshAllMarks = false;
   const refreshNotes = PR.debounce(() => {
     if (busy()) return refreshNotes();
-    PR.applyMarks(); PR.renderMargin();
+    if (refreshAllMarks) PR.applyMarks();
+    else highlightBlocks.forEach(id => PR.applyMarks(id));
+    highlightBlocks.clear();
+    refreshAllMarks = false;
+    PR.renderMargin();
     if (PR.notesPanelOpen()) PR.renderNotesPanel();
     if (body.classList.contains("drawer-open")) PR.renderDrawer();
   }, 80);
-  PR.on("reader", (op) => { if (op && op.op === "progress") return; if (!busy()) refreshNotes(); });
+  PR.on("reader", (op) => {
+    if (op?.op === "progress") return;
+    if (busy()) {
+      if (op?.highlightBlocks) setTimeout(() => op.highlightBlocks.forEach(id => PR.applyMarks(id)), 0);
+      return;
+    }
+    if (op?.highlightBlocks) op.highlightBlocks.forEach(id => highlightBlocks.add(id));
+    else refreshAllMarks = true;
+    refreshNotes();
+  });
 
   const seen = new Set();
   PR.on("remote", (changed) => {
@@ -84,7 +115,7 @@
         PR.$(".bar-title").innerHTML = PR.titleHtml(m.short_zh || m.title_zh || m.title_en || "");
       } else if (changed.includes("job")) {
         const pend = PR.$(".pending-pages .pending, .page-cap");
-        if (pend || (S.job || {}).state === "confirm") PR.rerenderKeepingPlace();
+        if (pend || (S.job || {}).state === "confirm" || (S.job || {}).type === "figure-images" || PR.$(".figure-job")) PR.rerenderKeepingPlace();
       }
       PR.applyMarks(); PR.renderMargin();
       if (PR.notesPanelOpen()) PR.renderNotesPanel();
@@ -129,6 +160,7 @@
     PR.ls.get("pr-seen-" + PR.paperKey, (S.discussion.entries || []).map((e) => e.id)).forEach((id) => seen.add(id));
     PR.ls.set("pr-seen-" + PR.paperKey, Array.from(seen));
     PR.renderPaper();
+    PR.citationNav.setup();
     PR.setupDemo();  // 署名要放在论文标题下面，得等正文渲染出来
     PR.applyMarks();
     PR.renderMargin();
@@ -146,9 +178,14 @@
     }, 80)).observe(PR.$("#paper"));
     PR.startPolling();
 
-    if (location.hash && document.getElementById(location.hash.slice(1))) {
+    let hashId = location.hash.slice(1);
+    try { hashId = decodeURIComponent(hashId); } catch (_) { /* Keep literal malformed hashes. */ }
+    const returned = PR.citationNav.restore();
+    if (returned) {
+      // The per-visit citation position takes precedence over ordinary progress.
+    } else if (hashId && document.getElementById(hashId)) {
       // 打开带 #段落 的链接：先跳过去，等字体、公式排好后再对一次中，免得排版变动把它挤偏
-      const id = location.hash.slice(1);
+      const id = hashId;
       setTimeout(() => PR.jumpTo(id, { noBack: true, instant: true }), 200);
       Promise.all([document.fonts ? document.fonts.ready : null, new Promise((r) => setTimeout(r, 900))])
         .then(() => PR.jumpTo(id, { noBack: true, instant: true, noFlash: true }));

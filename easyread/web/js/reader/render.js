@@ -3,6 +3,20 @@
 (function (PR) {
   "use strict";
   const S = PR.state;
+  const failedFigureImages = new Set();
+  PR.failFigureImage = function (id, url) {
+    const b = PR.blockById[id];
+    if (!b?.translated_image?.src || PR.imageUrl(b.translated_image.src) !== url) return;
+    failedFigureImages.add(url);
+    PR.renderBlock(id);
+    PR.applyMarks(id);
+  };
+  PR.hasTranslatedFigure = function (b) {
+    const t = b.translated_image;
+    return !!(t?.src && t.source === b.src && t.target === (S.paper.meta?.target || 'zh') &&
+      t.image_en === (b.image_en || '') && t.image_zh === (PR.editOf(b.id + '#image')?.zh ?? b.image_zh ?? '') &&
+      !failedFigureImages.has(PR.imageUrl(t.src)));
+  };
 
   /* ---------- 译文取值：key 形如 "s1-p1"、"tab1#caption"、"s1-recs#2" ---------- */
   PR.blockById = {};
@@ -18,7 +32,7 @@
   PR.agentText = function (key) { const [zh, en] = fields(key); return zh || en; };
   /* 这处还没有译文、正文排的是英文原文（只读原文） */
   PR.isEnKey = function (key) { const [zh, en] = fields(key); return !zh && !!en && !PR.editOf(key); };
-  PR.hasZh = (b) => !!(b.zh || b.caption_zh || b.image_zh || (Array.isArray(b.items) && b.items.some((i) => i && i.zh)));
+  PR.hasZh = (b) => !!(b.zh || b.caption_zh || b.image_zh || PR.hasTranslatedFigure(b) || (Array.isArray(b.items) && b.items.some((i) => i && i.zh)));
   PR.editOf = function (key) { const e = (S.reader.edits || {})[key]; return e && e.zh != null ? e : null; };
   PR.textFor = function (key) { const e = PR.editOf(key); return e ? e.zh : PR.agentText(key); };
   PR.isStale = function (key) { const e = PR.editOf(key); return !!(e && e.base && e.base !== PR.hashText(PR.agentText(key))); };
@@ -30,14 +44,18 @@
     return [b.id];
   };
 
+  let missingReferences = null;
   function buildIndex() {
     PR.buildFootnoteIndex(S.paper.blocks);
     PR.blockById = {};
-    PR.xindex = { eq: {}, tab: {}, fig: {}, sec: {} };
+    // 类型:编号 → 块 id，[表 3](#tab:3) 这样的链接靠它跳（markup.js）。代码清单、算法是带编号的 para 块（role listing/algorithm）
+    PR.xindex = { eq: {}, tab: {}, fig: {}, sec: {}, alg: {}, lst: {} };
     PR.headings = [];
     PR.refById = {};
     PR.order = {};
     (S.paper.references || []).forEach((r) => (PR.refById[String(r.id)] = r));
+    PR.buildCitationIndex(S.paper.references);
+    PR.buildCiteIndex(S.paper.references);
     (S.paper.blocks || []).forEach((b, i) => {
       if (!b || typeof b !== "object") return;
       PR.blockById[b.id] = b;
@@ -46,7 +64,16 @@
       if (b.type === "table" && b.num) PR.xindex.tab[b.num] = b.id;
       if (b.type === "figure" && b.num) PR.xindex.fig[b.num] = b.id;
       if (b.type === "heading" || b.type === "references") { if (b.num) PR.xindex.sec[b.num] = b.id; PR.headings.push(b); }
+      if (b.type === "para" && b.num && (b.role === "listing" || b.role === "algorithm")) PR.xindex[b.role === "listing" ? "lst" : "alg"][b.num] = b.id;
     });
+    missingReferences = null;
+    if ((S.paper.references || []).length && !(S.paper.blocks || []).some(b => b && b.type === "references")) {
+      let id = "__references";
+      while (PR.blockById[id]) id += "_";
+      missingReferences = { id, type: "references", level: 1, zh: PR.t("参考文献"), en: "References" };
+      PR.blockById[id] = missingReferences;
+      PR.headings.push(missingReferences);
+    }
   }
 
   function staleTag(key) { return PR.isStale(key) ? '<button class="stale-tag" data-t="stale" title="' + PR.t("你改过这段之后，译者稿又更新了") + '">' + PR.t("译者稿有更新") + "</button>" : ""; }
@@ -73,7 +100,25 @@
     if (value.every((row) => !Array.isArray(row))) return [value];
     return value.map((row) => Array.isArray(row) ? row : [row]);
   }
-  function cell(c) { return PR.md(String(c), { xref: false, cite: false }).replace(/<br>(\([^<]*\))/g, '<br><span class="sub">$1</span>'); }
+  // Older translations sometimes store a whole table note in the last row's first cell.
+  PR.tableParts = function (b) {
+    const head = tableRows(b.head), rows = tableRows(b.rows);
+    const notes = [];
+    let end = rows.length;
+    if (head.some(r => r.length > 1) || rows.some(r => r.length > 1)) {
+      while (end) {
+        const row = rows[end - 1], note = String(row[0] ?? "").trim();
+        if (!/^(?:\*{1,2})?(?:notes?|注[释釋]?|備註|备注)\s*[:：.]/i.test(note) ||
+            row.slice(1).some(c => String(c ?? "").trim())) break;
+        notes.unshift(note);
+        end--;
+      }
+    }
+    return {head, rows: rows.slice(0, end), notes};
+  };
+  PR.tableNotesHtml = (notes, b) => notes.map(note => '<div class="caption table-note">' +
+    PR.md(note, PR.footnoteOptions(b.id)) + "</div>").join("");
+  function cell(c, b) { return PR.md(String(c), { ...PR.footnoteOptions(b.id), xref: false, cite: false }).replace(/<br>(\([^<]*\))/g, '<br><span class="sub">$1</span>'); }
   function linkify(t) { return PR.esc(t).replace(/(https?:\/\/[^\s<]+[^\s<.,;)])/g, '<a href="$1" target="_blank" rel="noopener">$1</a>'); }
 
   /* 图块的归一化裁剪框 [x0,y0,x1,y1]；不合格式就返回 null（渲染时按默认处理）。 */
@@ -90,7 +135,7 @@
       const en = PR.isEnKey(b.id);
       return "<" + tag + ' class="zh' + (en ? ' en-main" lang="en"' : '"') + ' data-key="' + b.id + '">' + (b.num ? '<span class="num">' + PR.esc(b.num) + "</span>" : "") +
         "<span>" + PR.md(PR.textFor(b.id), PR.footnoteOptions(b.id)) + "</span>" + staleTag(b.id) +
-        (b.en && !en ? '<span class="en-title" lang="en">' + PR.md(b.en, { cite: false, xref: false }) + "</span>" : "") + "</" + tag + ">";
+        (b.en && !en ? '<span class="en-title" lang="en">' + PR.md(b.en, { ...PR.footnoteOptions(b.id), cite: false, xref: false }) + "</span>" : "") + "</" + tag + ">";
     },
     para: (b) => (b.role === "footnote" ? '<span class="footnote-label"><sup>' + PR.esc(b.num || "") + "</sup></span>" : "") + zhDiv(b.id) + enIfZh(b.id, b.en),
     list(b) {
@@ -101,17 +146,18 @@
     math(b) {
       const label = PR.esc(PR.t("复制公式（LaTeX）"));
       const copy = typeof b.tex === "string" && b.tex.trim() ? '<button type="button" class="btn icon math-copy" data-t="copy-math" title="' + label + '" aria-label="' + label + '">' + PR.icon("copy", "sm") + "</button>" : "";
-      // 序号和复制按钮固定在右侧，长公式在独立容器中缩放或滚动。
+      // 序号与复制按钮固定在右侧，长公式仍由 math-body 独立缩放或滚动。
       return '<div class="math-row"><div class="math-body">' + PR.tex(b.tex, true) + '</div><div class="math-tools">' +
         (b.tag ? '<div class="math-tag">(' + PR.esc(b.tag) + ")</div>" : "") + copy + "</div></div>";
     },
     table(b) {
+      const parts = PR.tableParts(b);
       const al = (b.align || "").split("");
       const style = (i) => (al[i] ? ' style="text-align:' + ({ l: "left", r: "right", c: "center" }[al[i]] || "left") + '"' : "");
-      const head = tableRows(b.head).map((r) => "<tr>" + r.map((c, i) => "<th" + style(i) + ">" + cell(c) + "</th>").join("") + "</tr>").join("");
-      const rows = tableRows(b.rows).map((r) => "<tr>" + r.map((c, i) => "<td" + style(i) + ">" + cell(c) + "</td>").join("") + "</tr>").join("");
+      const head = parts.head.map((r) => "<tr>" + r.map((c, i) => "<th" + style(i) + ">" + cell(c, b) + "</th>").join("") + "</tr>").join("");
+      const rows = parts.rows.map((r) => "<tr>" + r.map((c, i) => "<td" + style(i) + ">" + cell(c, b) + "</td>").join("") + "</tr>").join("");
       const table = '<div class="tbl-wrap"><table class="tbl"><thead>' + head + "</thead><tbody>" + rows + "</tbody></table></div>";
-      return b.caption_pos === "above" ? captionHtml(b) + table : table + captionHtml(b);
+      return (b.caption_pos === "above" ? captionHtml(b) + table : table + captionHtml(b)) + PR.tableNotesHtml(parts.notes, b);
     },
     figure(b) {
       // 图按原 PDF 的物理尺寸（1pt = 4/3 CSS px）显示，和原页一致；版心放不下时 max-width:100% 兜底。
@@ -127,11 +173,24 @@
         : '<button class="fig-missing" data-t="page">' + PR.t("图见原文第 {n} 页（点击查看）", { n: b.page }) + "</button>";
       const key = b.id + "#image";
       const imageText = b.image_zh || b.image_en ? '<div class="figure-translation"><div class="figure-translation-label">' + PR.t("图内文字") + '</div>' + zhDiv(key) + enIfZh(key, b.image_en) + '</div>' : "";
-      return '<div class="figure-media">' + img + '</div>' + imageText + captionHtml(b);
+      const translated = b.translated_image;
+      const current = PR.hasTranslatedFigure(b);
+      const failed = translated?.src && failedFigureImages.has(PR.imageUrl(translated.src));
+      const original = '<div class="figure-media">' + img + '</div>' + imageText;
+      const generate = PR.store.mode === 'server' && S.figure_images_enabled && b.src ? '<p class="figure-image-actions"><button class="btn sm line" data-t="figure-image"' + (jobRunning() ? ' disabled' : '') + '>' +
+        (translated?.src ? PR.t("重新生成译图") : PR.t("生成译图")) + '</button></p>' : '';
+      // 图片和正文共用 .zh / .en 配对，沿用阅读模式、双语顺序和单块展开。
+      // 有可用译图时不渲染图内文字；加载失败后才恢复文字兜底。
+      return (current ? '<div class="figure-generated"><div class="zh paired-translation figure-media"><img data-translated-figure src="' + PR.esc(PR.imageUrl(translated.src)) +
+        '" alt="' + PR.t("译图") + '" loading="lazy"' + style + '></div><div class="en figure-media">' + img + '</div></div>'
+        : (failed ? '<div class="figure-translation-label">' + PR.t("译图未能加载，已显示原图和文字译文") + '</div>' : '') + original) + generate + captionHtml(b);
     },
     note: (b) => '<div class="inline-note"><div class="lbl">' + PR.t("阅读批注（非原文）") + "</div>" + PR.mdBlocks(b.zh) + "</div>",
     references(b) {
-      const refs = (S.paper.references || []).map((r) => '<li id="ref-' + PR.esc(r.id) + '"><span class="n">[' + PR.esc(r.id) + "]</span><span>" + linkify(r.text) + "</span></li>").join("");
+      const refs = (S.paper.references || []).map((r) => {
+        const label = PR.refLabel(String(r.cite_key || r.id || ""));  // 作者-年份式的表不印编号，按悬挂缩进排
+        return '<li id="ref-' + PR.esc(r.id) + '"' + (label ? "" : ' class="plain"') + ">" + (label ? '<span class="n">' + PR.esc(label) + "</span>" : "") + "<span>" + linkify(r.text) + "</span></li>";
+      }).join("");
       if (!b.zh && b.en) return '<h2 class="zh en-main" lang="en" data-key="' + b.id + '"><span>' + PR.esc(b.en) + '</span></h2><div class="refs"><ol>' + refs + "</ol></div>";
       return '<h2 class="zh" data-key="' + b.id + '"><span>' + PR.esc(b.zh || PR.t("参考文献")) + '</span><span class="en-title" lang="en">' + PR.esc(b.en || "References") + "</span></h2>" +
         '<div class="refs"><p class="note">' + PR.t("条目保留原文，便于检索。") + "</p><ol>" + refs + "</ol></div>";
@@ -150,7 +209,7 @@
   const edited = (b) => PR.blockKeys(b).some((k) => PR.editOf(k));
 
   function sectionHtml(b, extraClass, pageMark) {
-    return '<section class="' + blockClass(b) + (extraClass || "") + '" id="b-' + PR.esc(b.id) + '" data-id="' + PR.esc(b.id) + '" data-page="' + PR.esc(b.page || "") + '">' +
+    return '<section class="' + blockClass(b) + (extraClass || "") + '" id="b-' + PR.esc(b.id) + '" data-id="' + PR.esc(b.id) + '">' +
       (pageMark ? '<button class="pgmark" data-t="page" title="' + PR.t("看原文第 {n} 页", { n: b.page }) + '">p.' + b.page + "</button>" : "") +
       R[b.type](b) + (edited(b) ? '<span class="edited-dot" title="' + PR.t("这里有你改过的译文") + '"></span>' : "") + "</section>";
   }
@@ -184,7 +243,21 @@
     return '<header class="paper-head" id="b-head" data-id="head">' + (kicker ? '<div class="kicker">' + kicker + "</div>" : "") +
       "<h1>" + PR.titleHtml(m.title_zh || m.title_en || PR.t("（正在识别标题）")) + "</h1>" +
       (m.title_zh && m.title_en && m.title_zh !== m.title_en ? '<p class="title-en" lang="' + (m.target === "en" ? "" : "en") + '">' + PR.titleHtml(m.title_en) + "</p>" : "") +
-      (by ? '<p class="byline">' + by + "</p>" : "") + '<p class="scope">' + scope + "</p>" + creditHtml() + "</header>";
+      (by ? '<p class="byline">' + by + "</p>" : "") + '<p class="scope">' + scope + "</p>" + figureJobsHtml() + creditHtml() + "</header>";
+  }
+
+  function figureJobsHtml() {
+    if (PR.store.mode !== 'server' || !(S.paper.blocks || []).some(b => b.type === 'figure' && b.src)) return '';
+    const job = S.job || {}, running = jobRunning();
+    if (!S.figure_images_enabled && !(job.type === 'figure-images' && running)) return '';
+    const button = S.figure_images_enabled ? '<button class="btn sm line" data-t="figure-images"' + (running ? ' disabled' : '') + '>' + PR.t("为本文生成译图") + '</button>' : '';
+    const hint = S.figure_images_enabled ? '<span class="hint">' + PR.t("只补齐缺失或已过期的译图，不重译正文") + '</span>' : '';
+    if (job.type !== 'figure-images') return '<div class="figure-job">' + button + ' ' + hint + '</div>';
+    return '<div class="figure-job" role="status">' + button + ' ' + hint + '<p>' + PR.esc(job.message || '') +
+      (running ? ' ' + PR.t("（{done}/{total} 张）", {done: job.done || 0, total: job.total || 0}) +
+        ' <button class="btn sm line" data-t="cancel-figure-images">' + PR.t("取消") + '</button>' : '') + '</p>' +
+      (job.error ? '<p class="err">' + PR.esc(job.error) + '</p>' : '') +
+      (S.figure_images_enabled && !running && Object.keys(job.image_failed || {}).length ? '<button class="btn sm line" data-t="retry-figure-images">' + PR.t("重试失败的译图") + '</button>' : '') + '</div>';
   }
 
   /* 还没译的页：放原页图，边译边读 */
@@ -209,7 +282,16 @@
     const m = S.paper.meta || {};
     const done = new Set((S.paper.translation || {}).done_pages || []);
     const miss = (m.pages || []).filter((p) => !done.has(p.n) && p.n > lastPage);
-    if (!(m.pages || []).length) return '<div class="pending"><span class="spin"></span> ' + PR.t("正在渲染原页、抽取文字…") + "</div>";
+    if (!(m.pages || []).length) {
+      const job = S.job || {};
+      const running = ["queued", "running"].includes(job.state);
+      const message = running ? '<span class="spin"></span> ' + PR.esc(job.message || PR.t("正在渲染原页、抽取文字…"))
+        : PR.t("原页尚未准备完成") + (job.state === "error" ? '<div class="err">' + PR.esc(job.error || job.message || PR.t("出错了")) + '</div>' : "") +
+          (PR.store.mode === "server" ? '<p class="hint">' + PR.t("请确认 PDF 在本机可读取、文献库目录可写，并关闭占用大量内存的程序后重试。重试仅准备原页，不调用翻译模型。") +
+            '</p><button class="btn sm accent" data-t="retry-prepare">' + PR.t("重试") + '</button>' : "");
+      // The remote job listener watches this wrapper, including before page 1 exists.
+      return '<div class="pending-pages"><div class="pending">' + message + '</div></div>';
+    }
     if (!miss.length) return "";
     const job = S.job || {};
     const running = ["queued", "running"].includes(job.state);
@@ -226,8 +308,7 @@
     return '<div class="pending-pages"><div class="pending">' + head + recovery + "</div>" + miss.map(origFig).join("") + "</div>";
   }
 
-  let renderedHtml = new Map();
-  PR.renderPaper = function (keepNodes = false) {
+  PR.renderPaper = function () {
     buildIndex();
     let html = headHtml() + (PR.store.mode === "server" ? PR.pageCapHtml(S.job) : ""), appendixSeen = false, lastPage = 0;
     const done = new Set((S.paper.translation || {}).done_pages || []);
@@ -249,37 +330,8 @@
         html += blockErrorHtml(b, error);
       }
     }
-    const paper = PR.$("#paper");
-    const nextHtml = html + pendingHtml(lastPage);
-    if (!keepNodes || !paper.children) {
-      paper.innerHTML = nextHtml;
-      renderedHtml = new Map(Array.from(paper.children || [], (el) => [el.id, el.outerHTML]));
-    } else {
-      // 后台译页只替换变化的块。保留旧节点上的图片加载状态、选区和交互状态。
-      const template = document.createElement("template");
-      template.innerHTML = nextHtml;
-      const oldById = new Map(Array.from(paper.children).filter((el) => el.id).map((el) => [el.id, el]));
-      const oldPages = new Map(Array.from(paper.querySelectorAll(".orig-page")).map((el) => [el.id, el]));
-      const nextRendered = new Map();
-      let cursor = paper.firstElementChild;
-      for (const fresh of Array.from(template.content.children)) {
-        const source = fresh.outerHTML;
-        const old = fresh.id && oldById.get(fresh.id);
-        const node = old && renderedHtml.get(fresh.id) === source ? old : fresh;
-        // 任务文案变化时，原页图片仍用已加载的节点，避免每次轮询重新解码并闪烁。
-        if (node === fresh && fresh.classList.contains("pending-pages")) {
-          for (const page of Array.from(fresh.querySelectorAll(".orig-page"))) {
-            const previous = oldPages.get(page.id);
-            if (previous && previous.outerHTML === page.outerHTML) page.replaceWith(previous);
-          }
-        }
-        if (node !== cursor) paper.insertBefore(node, cursor);
-        else cursor = cursor.nextElementSibling;
-        if (fresh.id) nextRendered.set(fresh.id, source);
-      }
-      while (cursor) { const next = cursor.nextElementSibling; cursor.remove(); cursor = next; }
-      renderedHtml = nextRendered;
-    }
+    if (missingReferences) html += sectionHtml(missingReferences, "", false);
+    PR.updatePaperHtml(PR.$("#paper"), html + pendingHtml(lastPage));
     // 一段译文都没有（只读原文）：顶栏的“译文 / 对照”没意义，藏起来
     document.body.classList.toggle("en-only", (S.paper.blocks || []).length > 0 && !(S.paper.blocks || []).some((b) => b && PR.hasZh(b)));
     // 译文语言决定正文字体（base.css 按 data-target 换字体）；1.3 以前译的论文没记语言，都是中文
@@ -345,31 +397,4 @@
   PR.on("rendered", () => PR.fitWide());
   PR.on("block-rendered", (id) => PR.fitWide(document.getElementById("b-" + id)));
 
-  /* 保持阅读位置不动地整页重排 */
-  let anchorResetFrame = 0;
-  PR.rerenderKeepingPlace = function () {
-    const line = PR.readingLine ? PR.readingLine() : innerHeight * 0.3;
-    const page = Array.from(document.querySelectorAll("#paper .orig-page"))
-      .find((el) => { const box = el.getBoundingClientRect(); return box.top <= line && box.bottom >= line; });
-    const anchor = PR.readingBlock && PR.readingBlock();
-    const node = page || (anchor && document.getElementById("b-" + anchor));
-    const before = node ? node.getBoundingClientRect().top : 0;
-    // 更新期间关闭浏览器自动滚动锚定，由同一视口锚点统一校正位置。
-    const root = document.documentElement;
-    const overflowAnchor = anchorResetFrame ? null : root.style.overflowAnchor;
-    root.style.overflowAnchor = "none";
-    try {
-      PR.renderPaper(true);
-      const pageNumber = page && Number(page.id.slice(5));
-      const after = page && document.getElementById(page.id) ||
-        (pageNumber && document.querySelector('#paper > .blk[data-page="' + pageNumber + '"]')) ||
-        (anchor && document.getElementById("b-" + anchor));
-      if (after) window.scrollBy(0, after.getBoundingClientRect().top - before);
-    } finally {
-      if (!anchorResetFrame) anchorResetFrame = requestAnimationFrame(() => {
-        root.style.overflowAnchor = overflowAnchor;
-        anchorResetFrame = 0;
-      });
-    }
-  };
 })(window.PR);

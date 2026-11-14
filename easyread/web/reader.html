@@ -4,15 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EasyRead</title>
+<script src="/web/js/common/desktop-bridge.js"></script>
 <link rel="icon" href="/web/favicon.svg">
 <link rel="stylesheet" href="/web/vendor/katex/katex.min.css">
 <link rel="stylesheet" href="/web/css/base.css">
 <link rel="stylesheet" href="/web/css/reader.css">
 <link rel="stylesheet" href="/web/css/reader-navigation.css">
 <link rel="stylesheet" href="/web/css/reader-media.css">
+<link rel="stylesheet" href="/web/css/figure-crop.css">
+<link rel="stylesheet" href="/web/css/figure-zoom.css">
 <link rel="stylesheet" href="/web/css/reading-language.css">
 <link rel="stylesheet" href="/web/css/sentences.css">
 <link rel="stylesheet" href="/web/css/reader-panels.css">
+<link rel="stylesheet" href="/web/vendor/note-libraries.css">
+<link rel="stylesheet" href="/web/css/paper-note-editor.css">
 <link rel="stylesheet" href="/web/css/reader-chat.css">
 <link rel="stylesheet" href="/web/css/settings.css">
 <link rel="stylesheet" href="/web/css/page-cap.css">
@@ -24,6 +29,7 @@
 
 <header class="topbar" id="bar">
   <a class="btn brand-back" id="backBtn" href="/" title="回文献库"></a>
+  <a class="btn citation-return" id="citationBack" hidden></a>
   <button class="btn icon" data-act="drawer" title="目录（T）"></button>
   <div class="bar-titles">
     <span class="bar-title"></span>
@@ -50,6 +56,7 @@
   <div class="drawer-tabs" role="tablist">
     <button data-tab="toc" class="on">目录</button>
     <button data-tab="terms">术语</button>
+    <button data-tab="citations" class="server-only">引用</button>
     <button data-tab="about">说明</button>
     <button data-tab="recent" class="server-only">最近</button>
   </div>
@@ -101,6 +108,7 @@
 <script src="/web/js/common/library-nav.js"></script>
 <script src="/web/js/common/presence.js"></script>
 <script src="/web/js/common/confirm.js"></script>
+<script src="/web/js/common/translation-task.js"></script>
 <script src="/web/js/common/features.js"></script>
 <script src="/web/js/common/usage.js"></script>
 <script src="/web/js/common/page-cap.js"></script>
@@ -109,28 +117,46 @@
 <script src="/web/js/reader/store.js"></script>
 <script src="/web/js/reader/annotation-history.js"></script>
 <script src="/web/js/reader/render.js"></script>
+<script src="/web/js/reader/render-place.js"></script>
 <script src="/web/js/reader/media-preview.js"></script>
 <script src="/web/js/reader/note-media.js"></script>
 <script src="/web/js/reader/note-media-drag.js"></script>
+<script src="/web/js/reader/figure-zoom.js"></script>
 <script src="/web/js/reader/sentences.js"></script>
 <script src="/web/js/reader/margin.js"></script>
+<script src="/web/js/reader/math-marks.js"></script>
+<script src="/web/js/reader/highlight-ranges.js"></script>
 <script src="/web/js/reader/anchor.js"></script>
 <script src="/web/js/reader/actions.js"></script>
+<script src="/web/js/reader/figure-crop.js"></script>
 <script src="/web/js/reader/editor.js"></script>
 <script src="/web/js/reader/panels.js"></script>
+<script src="/web/js/reader/reading-wheel.js"></script>
+<script src="/web/js/reader/citations.js"></script>
+<script src="/web/js/reader/citation-import.js"></script>
+<script src="/web/js/reader/selection-speech.js"></script>
+<script src="/web/js/reader/selection-translate.js"></script>
 <script src="/web/js/reader/reading-language.js"></script>
 <script src="/web/js/reader/page-zoom.js"></script>
 <script src="/web/js/reader/pageview.js"></script>
 <script src="/web/js/reader/pdf-text.js"></script>
 <script src="/web/js/reader/side-resize.js"></script>
+<script src="/web/vendor/note-libraries.js"></script>
+<script src="/web/js/reader/paper-note-editor.js"></script>
+<script src="/web/js/reader/paper-note-sources.js"></script>
 <script src="/web/js/reader/notespanel.js"></script>
 <script src="/web/js/reader/chat-effort.js"></script>
 <script src="/web/js/reader/chat-images.js"></script>
+<script src="/web/js/reader/chat-documents.js"></script>
 <script src="/web/js/reader/chat.js"></script>
+<script src="/web/js/reader/chat-export.js"></script>
+<script src="/web/js/common/save-export.js"></script>
+<script src="/web/js/common/export-dialog.js"></script>
 <script src="/web/js/reader/notehelp.js"></script>
 <script src="/web/js/reader/jumpback.js"></script>
 <script src="/web/js/reader/find.js"></script>
 <script src="/web/js/reader/progress.js"></script>
+<script src="/web/js/reader/citation-nav.js"></script>
 <script src="/web/js/reader/keys.js"></script>
 <script src="/web/js/reader/export.js"></script>
 <script src="/web/js/common/settings-models.js"></script>
@@ -139,6 +165,7 @@
 <script src="/web/js/common/settings.js"></script>
 <script src="/web/js/common/settings-tabs.js"></script>
 <script src="/web/js/common/settings-chat.js"></script>
+<script src="/web/js/common/settings-translation.js"></script>
 <script src="/web/js/reader/main.js"></script>
 </body>
 </html>

@@ -65,7 +65,7 @@ body.font-sans #paper { font-family: var(--sans-zh); letter-spacing: .01em; }
 .blk { position: relative; margin: 0 0 .95em; border-radius: 4px; }
 /* 长论文切换原文 / 译文 / 双语时整篇重排很慢（上千段要几百毫秒）：屏幕外的段落先不排版，滚到附近再排。
    页边色条、页码、笔记角标画在段落框外，clip-margin 留出位置免得被裁掉 */
-#paper .blk { content-visibility: auto; contain-intrinsic-size: auto 120px; overflow-clip-margin: 80px; }
+html:not(.stable-text-layout) #paper .blk { content-visibility: auto; contain-intrinsic-size: auto 120px; overflow-clip-margin: 80px; }
 .blk::before { content: ""; position: absolute; left: -16px; top: .3em; bottom: .3em; width: 3px; border-radius: 2px; background: transparent; transition: background .15s; }
 .blk.current::before { background: var(--accent); opacity: .55; }
 .blk.flash { animation: flash 1.6s ease; }
@@ -138,9 +138,11 @@ table.tbl td .sub { color: var(--ink-3); }
 .caption .zh { display: table; margin: 0 auto; }
 .caption .en { width: fit-content; margin-left: auto; margin-right: auto; }
 .caption .label { font-weight: 600; color: var(--ink); margin-right: .15em; }
-.blk-figure img { display: block; max-width: 100%; margin: 0 auto; border-radius: 2px; mix-blend-mode: multiply; }
-:root[data-theme="dark"] .blk-figure img { mix-blend-mode: normal; filter: invert(.88) hue-rotate(180deg); }
+/* 图片保持原色，透明区域按 PDF 的白纸底色显示。 */
+.blk-figure img { display: block; max-width: 100%; margin: 0 auto; border-radius: 2px; background: #fff; }
 .figure-media { margin: 0 auto; }
+.figure-image-actions { text-align: center; margin: .6em 0; }
+.figure-job { margin-top: 1em; font: 13px/1.6 var(--ui); }
 .figure-translation { margin: .8em auto 0; padding: .65em .85em .7em; max-width: 42em; border-left: 2px solid var(--accent); border-radius: 4px; background: var(--accent-soft); font-size: .86em; line-height: 1.7; }
 .figure-translation-label { margin-bottom: .2em; font: 11.5px/1.4 var(--ui); letter-spacing: .06em; color: var(--accent); }
 .figure-translation .zh { text-align: left; }
@@ -155,6 +157,7 @@ table.tbl td .sub { color: var(--ink-3); }
 .refs ol { list-style: none; margin: 0; padding: 0; }
 .refs li { display: grid; grid-template-columns: 2.6em 1fr; margin: 0 0 .7em; border-radius: 3px; overflow-wrap: anywhere; }
 .refs li .n { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.refs li.plain { display: block; padding-left: 1.6em; text-indent: -1.6em; }
 .refs li.flash { animation: flash 1.6s ease; }
 
 /* 未译的页 */
@@ -165,7 +168,6 @@ table.tbl td .sub { color: var(--ink-3); }
 .orig-page { margin: 0 0 2em; }
 .orig-page figcaption { font: 12.5px var(--ui); color: var(--ink-3); margin-bottom: 6px; }
 .orig-page img { width: 100%; display: block; background: #fff; box-shadow: 0 0 0 1px var(--rule), 0 4px 14px rgba(0,0,0,.06); }
-:root[data-theme="dark"] .orig-page img { filter: invert(.9) hue-rotate(180deg) contrast(.9); }
 
 /* 行内：引用、交叉引用、划线 */
 a.cite, a.xref { color: var(--accent); text-decoration: none; border-bottom: 1px dotted color-mix(in srgb, var(--accent) 45%, transparent); cursor: pointer; font-variant-numeric: lining-nums; }
@@ -187,6 +189,9 @@ mark.hl.q { box-shadow: inset 0 -.14em 0 color-mix(in srgb, var(--mine) 65%, tra
 mark.hl.agent { background: transparent; box-shadow: inset 0 -.12em 0 color-mix(in srgb, var(--accent) 45%, transparent); cursor: default; }
 mark.hl.active { outline: 2px solid color-mix(in srgb, var(--mine) 40%, transparent); outline-offset: 1px; }
 mark.hl.agent.active { background: var(--hl-q); outline: 0; }
+.katex-html > .base { position: relative; isolation: isolate; }
+.katex mark.hl.math-fragment { background: transparent; box-shadow: none; outline: none; }
+.katex mark.hl.math-band { position: absolute; z-index: -1; padding: 0; pointer-events: none; }
 code { font: .86em var(--mono); background: var(--accent-soft); padding: .1em .3em; border-radius: 3px; }
 .blk pre { max-width: 100%; overflow-x: auto; padding: .8em 1em; background: var(--accent-soft); border-radius: 4px; text-align: left; }
 .blk pre code { display: block; padding: 0; background: none; white-space: pre; }
@@ -302,3 +307,7 @@ textarea.editor { display: block; width: 100%; resize: none; overflow: hidden; b
 .blk.footnote { font-size: .88em; color: var(--ink-2); padding-left: 1.6em; border-left: 2px solid var(--ink-3); }
 .footnote-label { position: absolute; left: .3em; }
 .footnote-ref { text-decoration: none; cursor: pointer; }
+.ref-tools { display: flex; flex-wrap: wrap; gap: .3em 1em; margin-top: .3em; font: 12px/1.5 var(--ui); }
+.ref-tools a, .ref-tools summary { color: var(--accent); cursor: pointer; text-decoration: none; }
+.ref-tools a:hover { text-decoration: underline; }
+.ref-tools details a { display: block; margin: .3em 0; color: var(--ink-2); }

@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from ..library import paperdata
-from . import translate
+from . import translate, instructions
 
 
 def enqueue(jobs, ws, body: dict) -> dict:
     last = ws.load("job") or {}
     pending = last.get("state") == "confirm"
+    extra = instructions.validate(body.get("translation_extra", last.get("translation_extra", "")
+                                            if pending or body.get("failed") else ""))
     explicit = body.get("pages") is not None
     pages = paperdata.parse_pages(body["pages"]) if explicit else None
     cap_check = False
@@ -33,5 +35,5 @@ def enqueue(jobs, ws, body: dict) -> dict:
             pages = sorted(set((ws.load("paper").get("translation") or {}).get("en_pages", [])))
             cap_check = True  # 系统生成的页计划仍需确认；用户亲自填 pages 才豁免。
     jobs.enqueue(ws, pages=pages, translate_after=True, scope=scope, read=read, model=model,
-                 confirmed=body.get("confirmed") is True, target=target, cap_check=cap_check)
+                 confirmed=body.get("confirmed") is True, target=target, cap_check=cap_check, translation_extra=extra)
     return {"ok": True}

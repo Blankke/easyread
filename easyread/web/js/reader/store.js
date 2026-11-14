@@ -10,6 +10,7 @@
   let serverReader = null;
   let outbox = [];
   let outboxKey = "";
+  let storageFailed = false;
   let flushing = false, retryMs = 1500, retryT = null, flushT = null;
   let flushPromise = null;
   const client = PR.uid("c");
@@ -56,9 +57,14 @@
   }
 
   function rebuildReader() { S.reader = applyOps(JSON.parse(JSON.stringify(serverReader || {})), outbox); }
-  function saveOutbox() { if (!PR.ls.set(outboxKey, outbox)) setStatus("error", PR.t("浏览器存储已满，修改只在内存里，请尽快导出")); }
+  function storageWarning() { setStatus("error", PR.t("浏览器存储已满，修改只在内存里，请尽快导出")); }
+  function saveOutbox() {
+    storageFailed = !PR.ls.set(outboxKey, outbox) && outbox.length > 0;
+    if (storageFailed) storageWarning();
+  }
   function setStatus(s, text) { PR.store.status = s; PR.emit("status", { s, text, pending: outbox.length }); }
   function statusIdle() {
+    if (storageFailed) { storageWarning(); return; }
     if (mode === "static") setStatus("local", outbox.length ? PR.t("存在本浏览器") : PR.t("离线版"));
     else setStatus("saved", PR.t("已保存"));
   }
@@ -66,6 +72,8 @@
   /* 页面调用这个提交修改 */
   PR.commit = function (op) {
     op.at = op.at || PR.nowIso();
+    const noteId = op.op === "note" ? op.note.id : op.op === "note_del" ? op.id : null;
+    const previous = noteId && S.reader.notes?.[noteId];
     // 同一目标还没发出去的旧操作合并掉，避免队列无限长
     if (op.op === "note") outbox = outbox.filter((o) => !(o.op === "note" && o.note.id === op.note.id));
     if (op.op === "edit") outbox = outbox.filter((o) => !(o.op === "edit" && o.block === op.block));
@@ -73,8 +81,11 @@
     outbox.push(op);
     saveOutbox();
     rebuildReader();
-    PR.emit("reader", op);
-    if (mode === "server") { if (op.op !== "progress") setStatus("saving", PR.t("保存中")); scheduleFlush(op.op === "progress" ? 3000 : 250); }
+    const changed = noteId ? [previous, S.reader.notes?.[noteId]].filter(Boolean) : [];
+    if (changed.length && changed.every(n => n.kind === "highlight" && n.anchor && !n.parts?.length)) {
+      PR.emit("reader", { ...op, highlightBlocks: [...new Set(changed.map(n => n.anchor))] });
+    } else PR.emit("reader", op);
+    if (mode === "server") { if (op.op !== "progress" && !storageFailed) setStatus("saving", PR.t("保存中")); scheduleFlush(op.op === "progress" ? 3000 : 250); }
     else statusIdle();
   };
 
@@ -110,7 +121,8 @@
       if (outbox.length) scheduleFlush(50); else statusIdle();
       return true;
     } catch (e) {
-      setStatus("offline", PR.t("未连上本地服务，{n} 条修改暂存在浏览器", { n: outbox.length }));
+      if (storageFailed) storageWarning();
+      else setStatus("offline", PR.t("未连上本地服务，{n} 条修改暂存在浏览器", { n: outbox.length }));
       clearTimeout(retryT);
       retryT = setTimeout(flush, retryMs);
       retryMs = Math.min(retryMs * 2, 15000);
@@ -122,7 +134,7 @@
   PR.flush = flush;
   /* 待发的操作立刻发出去（关页面、退出软件前用） */
   PR.flushPending = async (opts = {}) => {
-    if (mode !== "server") return true;
+    if (mode !== "server") return !storageFailed;
     clearTimeout(flushT);
     if (opts.leaving && flushing && outbox.length) {
       // A closing document cannot wait to start its final request. Operations
@@ -134,7 +146,9 @@
       }).then(r => r.ok).catch(() => false);
     }
     if (flushPromise && !await flushPromise) return false;
-    while (outbox.length) if (!await flush({ keepalive: true })) return false;
+    // Desktop close waits for this promise; large image notes must use a normal
+    // request. Keepalive has a small body quota and is only needed on page leave.
+    while (outbox.length) if (!await flush({ keepalive: !!opts.leaving })) return false;
     return true;
   };
 
@@ -157,7 +171,8 @@
       if (!r.ok) throw new Error(r.status === 404 ? PR.t("文献库里没有这篇论文") : PR.t("读取数据失败：{status}", { status: r.status }));
       const d = await r.json();
       PR.token = d.token;
-      Object.assign(S, { paper: d.paper, discussion: d.discussion, layout: d.layout || {}, item: d.item || {}, job: d.job || {}, versions: d.versions, engine: d.engine });
+      Object.assign(S, { paper: d.paper, discussion: d.discussion, layout: d.layout || {}, item: d.item || {}, job: d.job || {}, versions: d.versions, engine: d.engine,
+        figure_images_enabled: d.figure_images_enabled === true });
       serverReader = d.reader || {};
     }
     const ov = (S.item || {}).meta_override || {};
@@ -187,7 +202,9 @@
     }
     const changed = [];
     for (const name of ["paper", "discussion", "layout", "reader", "job"]) if (v[name] && v[name] !== S.versions[name]) changed.push(name);
-    if (!changed.length) return;
+    const imagesChanged = S.figure_images_enabled !== (v.figure_images_enabled === true);
+    S.figure_images_enabled = v.figure_images_enabled === true;
+    if (!changed.length) { if (imagesChanged) PR.emit("figure-images-setting"); return; }
     for (const name of changed) {
       if (name === "reader" && (flushing || outbox.length)) continue; // 自己正在写，等写完
       const d = await (await fetch(base() + "/part/" + name, { cache: "no-store" })).json();
@@ -196,6 +213,7 @@
     }
     if (changed.includes("paper")) { const ov = (S.item || {}).meta_override || {}; for (const [k, val] of Object.entries(ov)) if (val) S.paper.meta[k] = val; }
     PR.emit("remote", changed);
+    if (imagesChanged) PR.emit("figure-images-setting");
   }
   PR.poll = poll;
   PR.startPolling = function () {
@@ -208,6 +226,10 @@
 
   window.addEventListener("beforeunload", (e) => {
     if (PR.captureProgress) PR.captureProgress();
+    if (storageFailed && outbox.length) {
+      if (mode === "server") flush();
+      e.preventDefault(); e.returnValue = ""; return;
+    }
     if (mode !== "server" || !outbox.length) return;
     if (outbox.some((o) => o.op !== "progress")) { flush(); e.preventDefault(); e.returnValue = ""; return; }
     flush({ keepalive: true });  // 只有读到哪儿没存：不拦着人走，但别丢

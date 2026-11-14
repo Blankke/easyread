@@ -16,7 +16,6 @@
   function sameAsTranslation(s, m) {
     const c = s.cfg, e = c.engine;
     if (m.engine !== e) return false;
-    if (e === "chatgpt_web") return (m.model || "") === ((c.chatgpt_web || {}).model || "");
     if (["reasoning_effort", "service_tier"].some((k) => (m[k] || "") !== (c[e][k] || ""))) return false;
     if (PR.isCli(e)) return (m.model || "") === (c[e].model || "");
     const o = c.openai, p = preset(s, m.preset);
@@ -68,17 +67,13 @@
       const rec = ((p && p.models) || []).find((x) => x.id === m.model);
       Object.assign(c.openai, { preset: m.preset || "", base_url: m.base_url || (p ? p.base_url : ""), api: m.api || (p && p.api) || "chat",
         model: m.model, api_key: typed || (PR.apiHasKey(s, m.preset, m.base_url) ? "••••" : ""), vision: rec ? !!rec.vision : !!c.openai.vision });
-    } else if (m.engine === "chatgpt_web") {
-      c.chatgpt_web = { ...c.chatgpt_web, model: m.model || "" };
     } else {
       if (m.engine === "codex" && c.codex.model !== (m.model || "")) c.codex.reasoning_effort = "";
       c[m.engine].model = m.model || "";
     }
     c.engine = m.engine;
-    if (m.engine !== "chatgpt_web") {
-      c[m.engine].reasoning_effort = m.reasoning_effort || "";
-      c[m.engine].service_tier = m.service_tier || "";
-    }
+    c[m.engine].reasoning_effort = m.reasoning_effort || "";
+    c[m.engine].service_tier = m.service_tier || "";
   }
 
   /* ---------- 卡片 ---------- */
@@ -93,7 +88,7 @@
         "<b>" + PR.esc(m.label || m.name) + "</b>" + PR.esc(m.source || "") +
         (tags || bad ? '<span class="mc-tags">' + tags + bad + "</span>" : "") + "</div>";
     }).join("") +
-      '<div class="mc add' + (s.editing === "new" ? " editing" : "") + '" data-cm="add" role="button" tabindex="0">' + PR.icon("plus") + "<b>" + PR.t("添加模型") + "</b></div></div>";
+      '</div><button class="model-add" data-cm="add">' + PR.icon("plus", "sm") + PR.t("添加模型") + '</button>';
   }
 
   /* ---------- 添加 / 修改的表单 ---------- */
@@ -105,14 +100,15 @@
       Object.keys(PR.agentClis).map((k) => card(k, PR.agentClis[k].name)).join("") + card("chatgpt_web", PR.t("ChatGPT 网页")) + card("api", PR.t("API 接口")) + "</div>";
     if (PR.isAgentCli(f.kind)) {  // 没有现成的模型名单：自己填，空着用 CLI 自己的默认
       const found = (s.found || {})[f.kind], a = PR.agentClis[f.kind];
-      h += '<label class="field"><span>' + PR.t("模型") + '</span><input class="input" id="cmModel" value="' + PR.esc(f.model || "") + '" placeholder="' + PR.t("留空用它自己的默认模型") + '"></label>' +
+      h += (a.defaultOnly ? '<p class="hint">' + PR.t("跟随 ZCode 中选择的模型") + '</p>' :
+        '<label class="field"><span>' + PR.t("模型") + '</span><input class="input" id="cmModel" value="' + PR.esc(f.model || "") + '" placeholder="' + PR.t("留空用它自己的默认模型") + '"></label>') +
         (found && !found.found ? '<p class="hint">' + PR.t("本机没找到 {name}", { name: '<a href="' + a.url + '" target="_blank" rel="noopener">' + a.name + "</a>" }) + "</p>" : "");
       if (a.hint) h += '<p class="hint">' + PR.esc(a.hint) + ' · <a href="' + a.url + '" target="_blank" rel="noopener">' + PR.esc(a.setup) + " ↗</a></p>";
     } else if (f.kind === "chatgpt_web") {
       const choices = ((s.webModels && s.webModels.models) || []).map((m) => [m.name, m.name]);
       h += '<label class="field"><span>' + PR.t("模型") + '</span><select class="input" id="cmModel">' + PR.opt(choices, f.model) + '</select></label>' +
         (!window.easyreadDesktop ? '<p class="hint">' + PR.t("请使用 Electron 桌面版") + '</p>' :
-          !choices.length ? '<p class="hint">' + PR.esc(s.webModelsError || PR.t("请先打开 ChatGPT 登录，再刷新模型列表")) + '</p>' : "");
+          !choices.length ? '<p class="hint">' + PR.esc(s.webModelsError || PR.t("请先打开 ChatGPT 登录，再刷新模型列表")) + '</p>' : '');
     } else if (f.kind === "claude" || f.kind === "codex") {
       const found = (s.found || {})[f.kind];
       h += '<label class="field"><span>' + PR.t("模型") + "</span>" + PR.cliModelSelect(s, f.kind, f.model, 'id="cmModel"') + "</label>" +
@@ -120,13 +116,13 @@
     } else {
       h += PR.apiForm.html(s, f, { keyProp: "key", vision: false });
     }
-    if (f.kind !== "chatgpt_web") h += PR.modelReasoningFields(s, f);
+    h += PR.modelReasoningFields(s, f);
     return h + '<div class="cm-form-acts"><span class="grow"></span>' +
       '<button class="btn sm" data-cm="cancel">' + (s.editing === "new" ? PR.t("取消") : PR.t("关闭")) + '</button>' + (s.editing === "new" ? '<button class="btn sm accent" data-cm="ok">' + PR.t("添加") + "</button>" : "") + "</div></div>";
   }
   function autoName(s, f) {
-    if (f.kind === "chatgpt_web") return f.model || PR.t("ChatGPT 网页");
     if (PR.isAgentCli(f.kind)) return f.model || PR.agentClis[f.kind].name;
+    if (f.kind === "chatgpt_web") return f.model || PR.t("ChatGPT 网页");
     if (f.kind === "claude" || f.kind === "codex") {  // 卡片名就是模型名
       const o = PR.cliModelOptions(s, f.kind, f.model).find(([v]) => v === (f.model || ""));
       return o ? o[1] : f.model || (f.kind === "claude" ? "Claude" : "GPT");
@@ -148,6 +144,7 @@
     if (!f) return;
     const v = (id) => { const el = PR.$("#" + id); return el ? el.value.trim() : null; };
     if (isApi(f.kind)) PR.apiForm.read(root(), f, "key");
+    else if (PR.isAgentCli(f.kind) && PR.agentClis[f.kind].defaultOnly) f.model = "";
     else if (v("cmModel") !== null) f.model = v("cmModel");
     for (const key of ["reasoning_effort", "service_tier"]) {
       const el = PR.$('[data-reasoning="' + key + '"]', root());
@@ -166,44 +163,28 @@
   }
 
   /* ---------- 翻译自己的设置 ---------- */
-  function translationHtml(s) {
-    const c = s.cfg, ti = transIndex(s), m = s.chat.models[ti];
-    const e = c.engine;
-    let h = '<h4 class="set-h">' + (m ? PR.t("翻译：{name}", { name: PR.esc(m.label || m.name) }) : PR.t("翻译")) + "</h4>";
-    if (m && e !== "chatgpt_web" && !(PR.isAgentCli(e) && !PR.agentClis[e].efforts.length)) h += '<p class="hint">' + PR.t("推理强度") + ': ' + PR.esc(m.reasoning_effort || PR.modelDefaultLabel(s, { kind: kindOf(m), model: m.model }, "reasoning_effort")) +
-      (e === "claude" || PR.isAgentCli(e) ? "" : ' · Fast: ' + PR.esc(m.service_tier || PR.modelDefaultLabel(s, { kind: kindOf(m), model: m.model }, "service_tier"))) + '</p>';
-    if (e === "openai") h += '<label class="check" style="margin:0 0 10px"><input type="checkbox" data-k="openai.vision"' + (c.openai.vision ? " checked" : "") + ">" + PR.t("模型能看图") + "</label>";
-    h += '<div class="grid2 translation-limits">' +
-      '<label class="field"><span>' + PR.t("每批页数") + '</span><select class="input" data-k="' + (e === "chatgpt_web" ? "chatgpt_web.batch_pages" : "batch_pages") + '">' + PR.opt([[1, PR.t("1 页")], [2, PR.t("2 页")], [3, PR.t("3 页")], [4, PR.t("4 页")]], e === "chatgpt_web" ? c.chatgpt_web.batch_pages : c.batch_pages) + "</select></label>" +
-      (e === "chatgpt_web" ? "" : '<label class="field" title="' + PR.t("把全文切成几段同时译，段内按顺序译；自动按篇幅每段约 2 批、最多 4 段；手动最多 8 段") + '"><span>' + PR.t("每篇同时译几段") + '</span><select class="input" data-k="concurrency">' + PR.opt([[0, PR.t("自动")], [1, "1"], [2, "2"], [3, "3"], [4, "4"], [5, "5"], [6, "6"], [7, "7"], [8, "8"]], c.concurrency || 0) + "</select></label>") +
-      '<label class="field"><span>' + PR.t("同时翻译几篇") + '</span><select class="input" data-k="paper_concurrency" aria-describedby="paperConcurrencyNote">' + PR.opt([[1, PR.t("1 篇（默认，逐篇处理）")], [2, PR.t("2 篇（并行）")], [3, PR.t("3 篇（并行）")], [4, PR.t("4 篇（并行，上限）")]], Number.isInteger(c.paper_concurrency) ? Math.max(1, Math.min(4, c.paper_concurrency)) : 1) + "</select></label>" +
-      '<label class="field"><span>' + PR.t("超过多少页先问我") + '</span><select class="input" data-k="page_cap">' + PR.opt([30, 60, 100, 200].map((n) => [n, PR.t("{n} 页", { n })]).concat([[0, PR.t("不限")]]), c.page_cap == null ? 60 : c.page_cap) + "</select></label></div>" +
-      '<div class="paper-concurrency-note" id="paperConcurrencyNote" role="note">' + PR.t("多篇并行会与单篇分段并发叠加，增加内存占用并可能触发模型限流，建议保持默认 1 篇，最多 4 篇，修改后重启 EasyRead 生效。") + '</div>' +
-      '<div class="test-line"><button class="btn sm line" id="testBtn">' + PR.icon("sparkle", "sm") + PR.t("试译一句") + '</button><span class="test-result" id="testRes"></span></div>';
-    if (e === "chatgpt_web") {
-      const w = c.chatgpt_web || {};
-      const number = (key, label, fallback, min, max) => '<label class="field"><span>' + PR.esc(label) +
-        '</span><input class="input" type="number" min="' + min + '" max="' + max + '" data-k="chatgpt_web.' + key +
-        '" value="' + PR.esc(String(w[key] ?? fallback)) + '"></label>';
-      h += '<div class="grid2"><label class="field"><span>' + PR.t("网页结果交付") + '</span><select class="input" data-k="chatgpt_web.output_mode">' +
-        PR.opt([["text", PR.t("正文 JSON（稳定选项）")], ["file", PR.t("JSON 文件（实验性）")], ["auto", PR.t("优先文件，完整正文可回退")]], w.output_mode || "text") + '</select></label>' +
-        number("file_batch_pages", PR.t("文件模式每批页数"), 4, 1, 12) +
-        number("rotate_requests", PR.t("每会话最多翻译请求"), 12, 1, 1000) +
-        number("rotate_pages", PR.t("每会话累计页数阈值"), 48, 1, 10000) +
-        number("rotate_messages", PR.t("历史消息阈值（0 为关闭）"), 0, 0, 10000) +
-        number("project_file_limit", PR.t("项目文件数量上限"), 5, 1, 40) + '</div>' +
-        '<label class="check"><input type="checkbox" data-k="chatgpt_web.rotate_enabled"' + (w.rotate_enabled !== false ? ' checked' : '') + '>' + PR.t("自动轮换翻译会话") + '</label>' +
-        '<label class="check"><input type="checkbox" data-k="chatgpt_web.project_sync"' + (w.project_sync ? ' checked' : '') + '>' + PR.t("同步共享术语库到项目（实验性）") + '</label>';
-    }
-    h += '<label class="field"><span>' + PR.t("翻译补充要求") + '</span><textarea class="input" data-k="translation_instructions" rows="3" maxlength="4000" placeholder="' + PR.t("例如：KV cache 保留英文，不翻译专业术语") + '">' + PR.esc(c.translation_instructions || "") + '</textarea><small>' + PR.t("自动保存，应用于之后的翻译和重译；不改变已有译文。") + '</small></label>';
-    return h;
-  }
+  const translationHtml = (s) => {
+    let h = PR.translationSettingsHtml(s);
+    if (s.cfg.engine !== "chatgpt_web") return h;
+    const w = s.cfg.chatgpt_web || {};
+    const number = (key, label, fallback, min, max) => '<label class="field"><span>' + PR.t(label) +
+      '</span><input class="input" type="number" min="' + min + '" max="' + max + '" data-k="chatgpt_web.' + key +
+      '" value="' + PR.esc(String(w[key] ?? fallback)) + '"></label>';
+    return h + '<div class="grid2"><label class="field"><span>' + PR.t("网页结果交付") + '</span><select class="input" data-k="chatgpt_web.output_mode">' +
+      PR.opt([["text", PR.t("正文 JSON（稳定选项）")], ["file", PR.t("JSON 文件（实验性）")], ["auto", PR.t("优先文件，完整正文可回退")]], w.output_mode || "text") + '</select></label>' +
+      number("file_batch_pages", "文件模式每批页数", 4, 1, 12) + number("rotate_requests", "每会话最多翻译请求", 12, 1, 1000) +
+      number("rotate_pages", "每会话累计页数阈值", 48, 1, 10000) + number("rotate_messages", "历史消息阈值（0 为关闭）", 0, 0, 10000) +
+      number("project_file_limit", "项目文件数量上限", 5, 1, 40) + '</div>' +
+      '<label class="check"><input type="checkbox" data-k="chatgpt_web.rotate_enabled"' + (w.rotate_enabled !== false ? ' checked' : '') + '>' + PR.t("自动轮换翻译会话") + '</label>' +
+      '<label class="check"><input type="checkbox" data-k="chatgpt_web.project_sync"' + (w.project_sync ? ' checked' : '') + '>' + PR.t("同步共享术语库到项目（实验性）") + '</label>';
+  };
+
   /* 页面上翻译那几项的值读回 cfg（存的时候 settings.js 从 cfg 取） */
   function readTranslation(s) {
     PR.$$("[data-k]", root()).forEach((el) => {
       const [a, b] = el.dataset.k.split(".");
       const v = el.type === "checkbox" ? el.checked : el.value;
-      if (b) s.cfg[a][b] = el.type === "number" || b === "batch_pages" ? +v : v; else s.cfg[a] = ["batch_pages", "concurrency", "paper_concurrency", "page_cap"].includes(a) ? +v : v;
+      if (b) (s.cfg[a] ||= {})[b] = el.type === "number" || b === "batch_pages" ? +v : v; else s.cfg[a] = ["batch_pages", "concurrency", "paper_concurrency", "page_cap"].includes(a) ? +v : v;
     });
   }
 
@@ -211,7 +192,7 @@
     const list = s.chat.models;
     const f = s.form, api = isApi(f.kind), p = preset(s, f.preset);
     if (api && !p && !f.base_url) { PR.toast(PR.t("填接口地址")); return false; }
-    if ((api || f.kind === "chatgpt_web") && !f.model) { PR.toast(PR.t("填一个模型名")); return false; }
+    if (api && !f.model) { PR.toast(PR.t("填一个模型名")); return false; }
     const typed = f.key && !f.key.startsWith("••••") ? f.key : "";
     if (api && p && p.key && !PR.apiHasKey(s, f.preset) && !typed) { PR.toast(PR.t("这家要填 API Key")); return false; }
     if (api && typed) (s.chatKeys = s.chatKeys || {})[PR.apiKeyId(f.preset, f.base_url)] = typed;
@@ -235,22 +216,12 @@
       if (!s.chat) return '<p class="hint">' + PR.t("读不到模型名单。") + "</p>";
       pinDefaults(s);
       ensureTranslationCard(s);
-      const projectState = s.webStatus?.projectState;
-      const projectHint = projectState === "ready" ? PR.t("翻译项目已配置") :
-        projectState === "checking" ? PR.t("正在检查翻译项目…") :
-          projectState === "error" ? PR.t("翻译项目配置失败：{msg}", { msg: s.webStatus.error || "" }) :
-            projectState === "login-required" ? PR.t("登录后自动配置翻译项目") : PR.t("等待配置翻译项目");
-      return '<div class="settings-sec"><h4 class="set-h">' + PR.t("ChatGPT 网页") + '</h4><p class="hint">' + PR.esc(s.webStatus ? (s.webStatus.ready ? PR.t("已登录") + " · " + projectHint : s.webStatus.error || PR.t("未登录；需要时请主动打开 ChatGPT 完成登录")) : PR.t("请使用 Electron 桌面版")) + '</p>' +
-        (s.webModelsError ? '<p class="hint">' + PR.esc(s.webModelsError) + '</p>' : "") + '<p class="hint">' + PR.t("点击网页顶部的关闭，或按 Esc 返回 EasyRead") + '</p>' +
-        (window.easyreadDesktop ? '<button class="btn sm" data-web-action="open">' + PR.t("打开 ChatGPT") + '</button> <button class="btn sm" data-web-action="refresh">' + PR.t("刷新模型列表") + '</button> <button class="btn sm" data-web-action="close">' + PR.t("关闭网页") + '</button>' +
-          (s.webStatus && s.webStatus.pending ? ' <button class="btn sm" data-web-action="clear">' + PR.t("核对网页后允许重试") + '</button>' : "") +
-          (s.webStatus?.translationSessions || []).map(session => '<p class="hint">' + PR.esc(session.paper_id || session.key) + ' · ' +
-            PR.esc(String(session.requests)) + ' / ' + PR.esc(String(session.pages)) + ' <button class="btn sm" data-web-action="rotate" data-web-session="' + PR.esc(session.key) + '">' +
-            (session.rotate_next ? PR.t("已安排下次使用新会话") : PR.t("下次翻译使用新会话")) + '</button></p>').join('') +
-          (s.webStatus?.resourceState?.error ? '<p class="hint">' + PR.esc(s.webStatus.resourceState.error) + '</p>' : '') : "") + '</div>' +
-        cardsHtml(s) + (s.editing ? formHtml(s) : "") +
-        '<div class="settings-sec">' + translationHtml(s) + "</div>" +
-        '<p class="hint" style="margin-top:14px">' + PR.t("文献库位置：{path}", { path: PR.esc(s.cfg.library_dir) }) + "</p>";
+      const web = s.webStatus;
+      const state = web?.projectState === "ready" ? PR.t("翻译项目已配置") : web?.projectState === "checking" ? PR.t("正在检查翻译项目…") : web?.projectState === "error" ? PR.t("翻译项目配置失败：{msg}", {msg: web.error || ""}) : web?.projectState === "login-required" ? PR.t("登录后自动配置翻译项目") : PR.t("等待配置翻译项目");
+      const webPanel = '<div class="settings-sec"><h4 class="set-h">' + PR.t("ChatGPT 网页") + '</h4><p class="hint">' + PR.esc(web ? (web.ready ? PR.t("已登录") + " · " + state : web.error || PR.t("未登录；需要时请主动打开 ChatGPT 完成登录")) : PR.t("请使用 Electron 桌面版")) + '</p>' +
+        (window.easyreadDesktop ? '<button class="btn sm" data-web-action="open">' + PR.t("打开 ChatGPT") + '</button> <button class="btn sm" data-web-action="refresh">' + PR.t("刷新模型列表") + '</button> <button class="btn sm" data-web-action="close">' + PR.t("关闭网页") + '</button>' : '') + '</div>';
+      return webPanel + cardsHtml(s) + (s.editing ? formHtml(s) : "") +
+        '<div class="settings-sec">' + translationHtml(s) + "</div>";
     },
     sync(s) { readForm(s); readTranslation(s); },
     change(e, s) {
@@ -258,7 +229,15 @@
         PR.customApis.select(s, s.form, e.target.value, "key");
         return true;
       }
-      if (e.target.dataset.k) { readTranslation(s); PR.saveModelSettings(); return false; }
+      if (e.target.dataset.k) {
+        if (e.target.dataset.k === "figure_images.base_url" && e.target.value.trim().replace(/\/$/, '') !== (s.cfg.figure_images?.base_url || '').trim().replace(/\/$/, '')) {
+          // A raw key typed earlier in this dialog belongs to the old endpoint.
+          // Blank lets the backend restore only the new endpoint's saved key.
+          const key = PR.$('[data-k="figure_images.api_key"]', root());
+          if (key) key.value = '';
+        }
+        readTranslation(s); PR.saveModelSettings(); return ["figure_images.enabled", "figure_images.provider"].includes(e.target.dataset.k);
+      }
       if (e.target.dataset.reasoning) { readForm(s); autoSaveForm(s); return true; }
       if (s.form && isApi(s.form.kind)) {
         readForm(s);
@@ -276,16 +255,13 @@
         try {
           if (webAction.dataset.webAction === "open") await window.easyreadDesktop.chatgptOpen();
           if (webAction.dataset.webAction === "close") await window.easyreadDesktop.chatgptClose();
-          if (webAction.dataset.webAction === "clear") await window.easyreadDesktop.chatgptClearPending();
           if (webAction.dataset.webAction === "rotate") await window.easyreadDesktop.chatgptRotate(webAction.dataset.webSession);
-          if (webAction.dataset.webAction === "refresh") {
-            s.webModels = await window.easyreadDesktop.chatgptModels(); s.webModelsError = "";
-            if (s.form && s.form.kind === "chatgpt_web" && !s.form.model) s.form.model = (s.webModels.models[0] || {}).name || "";
-          }
+          if (webAction.dataset.webAction === "refresh") s.webModels = await window.easyreadDesktop.chatgptModels();
           s.webStatus = await window.easyreadDesktop.chatgptStatus();
-        } catch (err) { s.webModelsError = err.message; PR.toast(err.message); }
+        } catch (error) { s.webModelsError = error.message; PR.toast(error.message); }
         return true;
       }
+      if (e.target.closest('[data-edit-translation-prompt]')) { PR.editTranslationPrompt(); return false; }
       if (e.target.closest("#testBtn")) {
         readTranslation(s);
         const res = PR.$("#testRes");
@@ -302,7 +278,7 @@
         readForm(s);
         const f = s.form, kind = k.dataset.cmk;
         if (kind === f.kind) return false;
-        Object.assign(f, { kind, model: kind === "claude" ? "opus" : kind === "chatgpt_web" ? ((s.webModels && s.webModels.models[0]) || {}).name || "" : PR.cliPin(s, kind, ""), name: "", key: "", base_url: "", api: "", reasoning_effort: "", service_tier: "" });
+        Object.assign(f, { kind, model: kind === "claude" ? "opus" : PR.cliPin(s, kind, ""), name: "", key: "", base_url: "", api: "", reasoning_effort: "", service_tier: "" });
         s.fetchMsg = null; s.apiTyping = false;
         if (isApi(kind)) {  // 先给一家：翻译那边用的 API，没有就 DeepSeek
           const o = s.cfg.openai;

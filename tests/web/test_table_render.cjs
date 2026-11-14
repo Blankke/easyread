@@ -4,7 +4,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { test } = require("node:test");
 
-function render(blocks) {
+function render(blocks, options = {}) {
   const paperEl = { innerHTML: "" };
   const bodyClass = new Set();
   const PR = {
@@ -40,7 +40,17 @@ function render(blocks) {
     emit() {},
     on() {},
     fitWide() {},
+    // These tests inspect generated markup; DOM reuse is a separate layer.
+    updatePaperHtml: (element, html) => { element.innerHTML = html; },
   };
+  if (options.references) PR.state.paper.references = options.references;
+  if (options.pages) PR.state.paper.meta.pages = options.pages;
+  if (options.job) PR.state.job = options.job;
+  if (options.mode) PR.store.mode = options.mode;
+  if (options.target) PR.state.paper.meta.target = options.target;
+  if (options.edited) PR.state.reader.edits = {'f1#image': {zh: 'edited'}};
+  PR.state.figure_images_enabled = options.figureImages === true;
+  PR.pageCapHtml = () => "";
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../../easyread/web/js/common/markup.js"), "utf8"), { window: { PR }, URL });
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../../easyread/web/js/reader/render.js"), "utf8"), {
     window: { PR },
@@ -55,6 +65,68 @@ function render(blocks) {
   PR.renderPaper();
   return paperEl.innerHTML;
 }
+
+test("translated figures pair original and translation without OCR text; stale results fall back", () => {
+  const b = {id: 'f1', type: 'figure', page: 1, src: 'original.webp', image_en: 'Input', image_zh: '入力',
+    translated_image: {src: 'translated.webp', source: 'original.webp', target: 'ja', image_en: 'Input', image_zh: '入力'}};
+  const html = render([b], {target: 'ja'});
+  assert.match(html, /data-translated-figure src="translated.webp"/);
+  assert.match(html, /class="zh paired-translation figure-media"/);
+  assert.match(html, /class="en figure-media"/);
+  assert.doesNotMatch(html, /<details|data-key="f1#image"|入力|Input/);
+  assert.match(html, /src="original.webp"/);
+  assert.doesNotMatch(html, /class="figure-translation"/);
+  for (const [block, options] of [[{...b, src: 'recropped.webp'}, {target: 'ja'}],
+    [{...b, image_zh: 'new translation'}, {target: 'ja'}], [b, {target: 'de'}], [b, {target: 'ja', edited: true}]]) {
+    const fallback = render([block], options);
+    assert.doesNotMatch(fallback, /data-translated-figure/);
+    assert.match(fallback, /figure-translation/);
+  }
+});
+
+test('already translated documents offer image-only controls with progress and retries', () => {
+  const block = {id: 'f1', type: 'figure', page: 1, src: 'original.webp'};
+  const html = render([block], {mode: 'server', figureImages: true});
+  assert.match(html, /data-t="figure-images"/);
+  assert.match(html, /data-t="figure-image"/);
+  assert.doesNotMatch(render([block]), /data-t="figure-image/);
+  const running = render([block], {mode: 'server', figureImages: true, job: {type: 'figure-images', state: 'running', done: 1, total: 2, message: 'GENERATING'}});
+  assert.match(running, /data-t="figure-image" disabled/);
+  assert.match(running, /data-t="cancel-figure-images"/);
+  assert.match(running, /GENERATING/);
+  const failed = render([block], {mode: 'server', figureImages: true, job: {type: 'figure-images', state: 'partial', error: '<quota>', image_failed: {f1: 'quota'}}});
+  assert.match(failed, /data-t="retry-figure-images"/);
+  assert.match(failed, /&lt;quota&gt;/);
+});
+
+test('disabled image generation hides entry points while preserving existing image pairs', () => {
+  const block = {id: 'f1', type: 'figure', page: 1, src: 'original.webp', image_en: 'Input', image_zh: '输入',
+    translated_image: {src: 'translated.webp', source: 'original.webp', target: 'zh', image_en: 'Input', image_zh: '输入'}};
+  const disabled = render([block], {mode: 'server', job: {type: 'figure-images', state: 'partial', image_failed: {f1: 'quota'}}});
+  assert.doesNotMatch(disabled, /data-t="(?:figure-image|figure-images|retry-figure-images)"/);
+  assert.match(disabled, /data-translated-figure src="translated.webp"/);
+  assert.match(disabled, /class="en figure-media"/);
+  assert.doesNotMatch(disabled, /<details|data-key="f1#image"/);
+  const running = render([block], {mode: 'server', job: {type: 'figure-images', state: 'running'}});
+  assert.match(running, /data-t="cancel-figure-images"/);
+  assert.doesNotMatch(running, /data-t="figure-images"/);
+});
+
+test('regenerated images can use user-corrected labels without altering the translator text', () => {
+  const b = {id: 'f1', type: 'figure', page: 1, src: 'original.webp', image_zh: 'old',
+    translated_image: {src: 'corrected.webp', source: 'original.webp', target: 'zh', image_en: '', image_zh: 'edited'}};
+  assert.match(render([b], {edited: true}), /data-translated-figure src="corrected.webp"/);
+  assert.doesNotMatch(render([b]), /data-translated-figure/);
+});
+
+test("old single-cell notes render below the table while populated data rows stay inside", () => {
+  const block = {id: "t1", type: "table", page: 1, head: [["A", "B"]],
+    rows: [["Note: item", "21"], ["注：标准差。", ""], ["Notes: <source>"]]};
+  const html = render([block]);
+  assert.match(html, /<td>Note: item<\/td><td>21<\/td>/);
+  assert.match(html, /<\/table>[\s\S]*注：标准差。[\s\S]*Notes: &lt;source&gt;/);
+  assert.equal(block.rows.length, 3);
+});
 
 test("flat table head renders as one header row and does not hide later blocks", () => {
   const html = render([
@@ -74,3 +146,35 @@ test("one malformed block does not blank the rest of the reader", () => {
   assert.match(html, /bad/);
 });
 
+test("failed preparation shows escaped error and a model-free retry instead of a spinner", () => {
+  const html = render([], { pages: [], mode: "server", job: { state: "error", error: 'MemoryError <script>bad()</script>' } });
+  assert.match(html, /MemoryError &lt;script&gt;/);
+  assert.match(html, /data-t="retry-prepare"/);
+  assert.doesNotMatch(html, /class="spin"|<script>/);
+  // main.js refreshes job-only updates only when this exact wrapper exists.
+  assert.match(html, /class="pending-pages"><div class="pending"/);
+});
+
+test("only queued or running preparation shows a spinner", () => {
+  for (const state of ["queued", "running", "cancelled", "done", ""]) {
+    const html = render([], { pages: [], mode: "server", job: { state } });
+    assert.equal(html.includes('class="spin"'), ["queued", "running"].includes(state));
+    assert.equal(html.includes('data-t="retry-prepare"'), !["queued", "running"].includes(state));
+  }
+});
+
+test("offline unprepared documents do not offer an unavailable retry API", () => {
+  const html = render([], { pages: [], job: { state: "error", error: "MemoryError" } });
+  assert.match(html, /MemoryError/);
+  assert.doesNotMatch(html, /retry-prepare|class="spin"/);
+});
+
+
+
+test("references without a heading still get a jump destination", () => {
+  const html = render([{id:'p1', type:'para', page:1, zh:'Text'}], {
+    references:[{id:'7', text:'An extracted reference'}],
+  });
+  assert.match(html, /id="b-__references"/);
+  assert.match(html, /id="ref-7"/);
+});

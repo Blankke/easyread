@@ -1,15 +1,24 @@
 """设置页的保存类接口（POST）。server.py 按路径转过来，每个函数收请求体、返回要回给页面的 JSON。"""
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from ..chat import chat_models
 from ..app import config
 from ..app.api_keys import resolve, saved_keys
 from ..engines import engines, openai_api
-from ..translate import langs, instructions
+from ..translate import langs, instructions, prompt_style
 from ..app.i18n import tr
 
 
 def save_config(patch: dict) -> dict:
+    patch.pop("translation_prompt_default", None)
+    patch.pop("translation_prompt_effective", None)
+    patch.pop("translation_extra", None)  # Task-only instructions must never become global.
+    if "translation_prompt" in patch:
+        patch["translation_prompt"] = prompt_style.validate(patch["translation_prompt"])
+    if "translate_figure_text" in patch and type(patch["translate_figure_text"]) is not bool:
+        raise ValueError("translate_figure_text must be a boolean")
     if "translation_instructions" in patch:
         patch["translation_instructions"] = instructions.validate(patch["translation_instructions"])
     patch.pop("library_dir", None)
@@ -22,6 +31,26 @@ def save_config(patch: dict) -> dict:
         patch["target"] = langs.valid(patch["target"])
     if isinstance(patch.get("openai"), dict):
         patch["openai"] = config.with_key(patch["openai"])
+    if "figure_images" in patch:
+        options = patch["figure_images"]
+        if not isinstance(options, dict):
+            raise ValueError("figure_images must be an object")
+        if "enabled" in options and type(options["enabled"]) is not bool:
+            raise ValueError("figure_images.enabled must be a boolean")
+        if "provider" in options and options["provider"] not in ("codex", "api"):
+            raise ValueError("figure_images.provider must be codex or api")
+        for key in ("base_url", "api_key", "model"):
+            if key in options:
+                if not isinstance(options[key], str):
+                    raise ValueError(f"figure_images.{key} must be a string")
+                options[key] = options[key].strip()
+        if options.get("base_url"):
+            url = urlsplit(options["base_url"])
+            if url.scheme not in ("http", "https") or not url.netloc or url.username or url.password:
+                raise ValueError(tr("译图接口地址必须是 HTTP 或 HTTPS 地址"))
+        if "timeout" in options and (type(options["timeout"]) is not int or options["timeout"] <= 0):
+            raise ValueError("figure_images.timeout must be a positive integer")
+        patch["figure_images"] = config.with_key(options, "figure_images")
     return {"config": config.public(config.save(patch))}
 
 

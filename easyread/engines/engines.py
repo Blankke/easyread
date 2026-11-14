@@ -18,7 +18,8 @@ import threading
 from pathlib import Path
 
 from ..app.i18n import tr
-from . import agent_cli, codebuddy_cli, codex_lean, netcheck, usage
+from .timing import stage
+from . import agent_cli, codebuddy_cli, codex_lean, netcheck, usage, opencode_cli, zcode_cli, qoder_cli
 from ..app.log import log
 
 
@@ -36,9 +37,10 @@ class Cancelled(RuntimeError):
     pass
 
 
-ENGINE_NAMES = {"claude": "Claude Code", "codex": "Codex CLI", "codebuddy": "CodeBuddy CLI", **{k: v["name"] for k, v in agent_cli.SPECS.items()},
+ENGINE_NAMES = {"claude": "Claude Code", "codex": "Codex CLI", "codebuddy": "CodeBuddy CLI", "opencode": "OpenCode CLI", "zcode": "ZCode CLI", **{k: v["name"] for k, v in agent_cli.SPECS.items()},
                 "openai": "API", "chatgpt_web": "ChatGPT 网页", "none": "不翻译"}  # i18n-ok 显示时用 engine_name()
-CLI_ENGINES = ("claude", "codex", "codebuddy", *agent_cli.ENGINES)  # 本机 CLI：起子进程、用已登录的订阅
+ENGINE_NAMES["qoder"] = "Qoder CN CLI"
+CLI_ENGINES = ("claude", "codex", "codebuddy", "opencode", "zcode", "qoder", *agent_cli.ENGINES)  # 本机 CLI：起子进程、用已登录的订阅
 
 
 def engine_name(engine: str | None) -> str:
@@ -52,7 +54,8 @@ def run(cfg: dict, prompt: str, cwd: Path, images: list[Path] | None = None, can
     if bad:
         raise EngineError(bad)
     try:
-        return _run(cfg, prompt, cwd, images, cancel, meter)
+        with stage(meter, "model"):
+            return _run(cfg, prompt, cwd, images, cancel, meter)
     except EngineError as e:
         raise EngineError(netcheck.explain(cfg, str(e))) from None
 
@@ -62,12 +65,18 @@ def _run(cfg: dict, prompt: str, cwd: Path, images: list[Path] | None, cancel: t
     if engine == "chatgpt_web":
         from . import chatgpt_web
         return chatgpt_web.run(cfg.get("chatgpt_web") or {}, prompt, cwd, images, cancel)
+    if engine == "qoder":
+        return qoder_cli.run(cfg["qoder"], prompt, cwd, images or [], cancel, meter)
+    if engine == "opencode":
+        return opencode_cli.run(cfg["opencode"], prompt, cwd, images or [], cancel, meter)
     if engine == "claude":
         return run_claude(cfg["claude"], prompt, cwd, cancel, meter)
     if engine == "codex":
         return run_codex(cfg["codex"], prompt, cwd, images or [], cancel, meter)
     if engine == "codebuddy":
         return codebuddy_cli.run(cfg["codebuddy"], prompt, cwd, images or [], cancel, meter)
+    if engine == "zcode":
+        return zcode_cli.run(cfg["zcode"], prompt, cwd, images or [], cancel, meter)
     if engine == "openai":
         return run_openai(cfg["openai"], prompt, images or [], cancel, meter)
     if engine in agent_cli.ENGINES:
@@ -80,7 +89,7 @@ def image_mode(cfg: dict) -> str:
     engine = cfg.get("engine")
     if engine == "claude" or engine in agent_cli.ENGINES:
         return "claude"
-    if engine in ("codex", "codebuddy", "chatgpt_web") or (engine == "openai" and cfg["openai"].get("vision")):
+    if engine in ("codex", "codebuddy", "opencode", "zcode", "qoder", "chatgpt_web") or (engine == "openai" and cfg["openai"].get("vision")):
         return "attached"
     return "text"
 
@@ -115,6 +124,12 @@ def cli_path(engine: str, c: dict) -> str | None:
         return codex_path(c)
     if engine == "codebuddy":
         return codebuddy_cli.path(c)
+    if engine == "opencode":
+        return opencode_cli.path(c)
+    if engine == "zcode":
+        return zcode_cli.path(c)
+    if engine == "qoder":
+        return qoder_cli.path(c)
     return agent_cli.path(engine, c)
 
 
@@ -196,7 +211,7 @@ def option_unknown(err) -> bool:
 
 
 def for_translation(cfg: dict) -> dict:
-    """本机 CLI 只带用得到的东西（见 run_claude、run_codex）：整篇翻译、问 AI、回答笔记、重译一段都走这里。"""
+    """翻译精简配置；问答在 chat_tools.for_chat 中附加只读研究工具。"""
     out = dict(cfg)
     for e in ("claude", "codex"):
         if isinstance(cfg.get(e), dict):
@@ -216,7 +231,13 @@ def _codex_once(exe: str, c: dict, prompt: str, cwd: Path, images: list[Path], c
     for field, key in (("reasoning_effort", "model_reasoning_effort"), ("service_tier", "service_tier")):
         if c.get(field):
             args += ["-c", key + "=" + json.dumps(c[field])]
-    args += extra + ["-"]
+    args += extra
+    if c.get("_chat"):
+        # Codex dispatches built-in web search through its code-mode host.
+        args += ["-c", "features.code_mode_host=true", "-c", 'web_search="live"']
+    elif extra:
+        args += ["-c", "features.code_mode_host=false"]
+    args += ["-"]
     try:
         out = _communicate(_popen(args, cwd), prompt, int(c.get("timeout") or 1200), cancel)
         text = Path(last).read_text(encoding="utf-8", errors="replace").strip()
@@ -275,7 +296,7 @@ def parse_json(text: str):
         return obj
     if error is None:
         raise InvalidModelOutput(tr("模型输出里没有 JSON：{out}", out=text[:200]))
-    raise InvalidModelOutput(tr("模型输出的 JSON 格式有错（{err}）", err=error))
+    raise InvalidModelOutput(tr("模型输出的 JSON 格式有错（{err}），会自动重试", err=error))
 
 
 def _version(exe: str) -> str:
@@ -289,10 +310,6 @@ def _version(exe: str) -> str:
 def test(cfg: dict) -> dict:
     """设置页“测试”按钮：真的让模型回一句，确认引擎能用。"""
     engine = cfg.get("engine")
-    if engine == "chatgpt_web":
-        from . import chatgpt_web
-        if not chatgpt_web.available():
-            return {"ok": False, "message": tr("ChatGPT 网页未连接，请在桌面版登录")}
     if engine in CLI_ENGINES:
         exe = cli_path(engine, cfg[engine])
         if not exe:

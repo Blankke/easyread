@@ -9,8 +9,9 @@ from uuid import uuid4
 
 from ..chat import chat_models
 from ..app import config
-from ..translate import langs, translate
+from ..translate import langs, translate, instructions
 from ..engines import usage
+from ..engines.timing import Timeline
 from ..engines.engines import Cancelled, EngineError
 from ..app.i18n import tr
 from ..library.library import Library
@@ -57,21 +58,34 @@ class Jobs:
                 raise
 
     def enqueue(self, ws: Workspace, pages: list[int] | None = None, translate_after: bool = True, scope: str | None = None,
-                read: bool = False, model: str = "", confirmed: bool = False, target: str = "", cap_check: bool = False):
+                read: bool = False, model: str = "", confirmed: bool = False, target: str = "", cap_check: bool = False,
+                translation_extra: str = ""):
         """pages=None：按 scope（all / body / range:A-B / first:N）翻译还没译的页。
         read：只读原文，用模型把页整理成段落、公式、表格，不翻译；之后再翻译时就地补中文。
         model：用“问 AI”名单里的哪个模型（导入时选的）；空着用设置里的翻译引擎。
         confirmed：只接受真正的 True；target：续跑时保留原任务的译文语言。
         cap_check：pages 来自系统计划而非用户指定，仍检查页数上限并跳过已完成页。"""
         target = langs.valid(target) if target else langs.of_paper((ws.load("paper") or {}).get("meta"))
+        translation_extra = instructions.validate(translation_extra)
         def apply(job):
             if job.get("state") in ("queued", "running"):
                 raise ValueError(tr("这篇论文已有任务在排队或运行，请等它结束，或先取消再重试。"))
             job.update(type="read" if read and translate_after else "translate" if translate_after else "prepare",
                        state="queued", message=tr("排队中"), pages=pages, scope=scope or "all", translate=translate_after, read=read, model=model or "",
-                       confirmed=confirmed is True, target=target, cap_check=cap_check is True,
+                       confirmed=confirmed is True, target=target, cap_check=cap_check is True, translation_extra=translation_extra,
                        done=0, total=0, error="", failed={}, updated=now_iso(), usage={})
+            # Explicit page requests can intentionally retranslate a completed page.
+            # Its revision changes in the same paper.json write as the new translation.
+            job.pop("retranslate_revisions", None)
+            if pages is not None and not cap_check:
+                tl = (ws.load("paper") or {}).get("translation", {})
+                done = set(tl.get("done_pages", []))
+                if not read:
+                    done.difference_update(tl.get("en_pages", []))
+                revisions = tl.get("page_revisions", {})
+                job["retranslate_revisions"] = {str(n): revisions.get(str(n), 0) for n in pages if n in done}
             job.pop("page_cap", None)
+            job.pop("timing", None)
         with self.lock:
             ws.update("job", apply)
             self.bulk.put(ws.id)
@@ -87,6 +101,25 @@ class Jobs:
                 self._write(ws, state="cancelled", message=tr("已取消"))
             elif job.get("state") == "confirm":
                 self._write(ws, state="done", message=tr("已导入，未整理") if job.get("read") else tr("已导入，未翻译"))
+
+    def enqueue_figures(self, ws: Workspace, body: dict):
+        from . import figure_jobs
+        if not (config.load().get("figure_images") or {}).get("enabled"):
+            raise ValueError(tr("请先在设置中开启生成译图"))
+        ids = figure_jobs.select(ws, body)
+
+        def apply(job):
+            if job.get("state") in ("queued", "running"):
+                raise ValueError(tr("这篇论文已有任务在排队或运行，请等它结束，或先取消再重试。"))
+            job.update(type="figure-images", state="queued", message=tr("译图排队中"),
+                       figure_ids=ids, force=body.get("force", False), translate=True, read=False,
+                       model="", target="", translation_extra="", done=0, total=len(ids),
+                       error="", failed={}, image_failed={}, updated=now_iso(), usage={})
+            job.pop("timing", None)
+        with self.lock:
+            ws.update("job", apply)
+            self.bulk.put(ws.id)
+        return {"ok": True, "count": len(ids)}
 
     def stop_model_work(self, ids: list[str] | None = None) -> int:
         """一键停止：只停用模型的部分（翻译、整理原文、等确认页数的），原页照样渲染。
@@ -108,7 +141,7 @@ class Jobs:
                         ev.set()
                 elif state == "confirm":
                     self._write(ws, state="done", message=tr("已导入，未整理") if job.get("read") else tr("已导入，未翻译"))
-                elif (ws.load("paper") or {}).get("meta", {}).get("pages"):
+                elif job.get("type") == "figure-images" or (ws.load("paper") or {}).get("meta", {}).get("pages"):
                     self._write(ws, state="cancelled", message=tr("已取消"))
                 else:  # 留在队里，轮到时只渲染原页
                     self._write(ws, type="prepare", translate=False, read=False, message=tr("排队中"))
@@ -123,6 +156,12 @@ class Jobs:
                 log.exception("Cannot resume task; unreadable data file: %s", e.path)
                 continue
             if job.get("state") in ("queued", "running"):
+                if job.get("type") == "figure-images" and job.get("state") == "running":
+                    self._write(ws, state="cancelled", message=tr("译图任务因服务重启而中断，已保存的图片保留；可手动补齐"))
+                    continue  # An in-flight generation may have consumed quota; never blindly repeat it.
+                # Legacy running tasks persisted their original page list without a checkpoint.
+                if job.get("state") == "running" and "retranslate_revisions" not in job:
+                    self._write(ws, retranslate_revisions={})
                 self._write(ws, state="queued", message=tr("排队中（服务重启后继续）"))
                 self.bulk.put(ws.id)
 
@@ -171,14 +210,23 @@ class Jobs:
                     self.cancels.pop(pid, None)
 
     def _run_bulk(self, ws: Workspace, job: dict, cancel: threading.Event):
+        if job.get("type") == "figure-images":
+            from . import figure_jobs
+            return figure_jobs.run(self, ws, job, config.load(), cancel)
         cfg = engine_for(config.load(), job.get("model"))
+        timeline = Timeline()
+        cfg = {**cfg, "translation_extra": job.get("translation_extra", "")}
         if job.get("target"):
             cfg = {**cfg, "target": langs.valid(job["target"])}
         if cancel.is_set():
             raise Cancelled()
         if not ws.load("paper").get("meta", {}).get("pages"):
             self._write(ws, state="running", message=tr("正在渲染原页、抽取文字"))
-            translate.prepare(ws)
+            try:
+                with timeline.stage("prepare"):
+                    translate.prepare(ws)
+            finally:
+                self._write(ws, timing=timeline.snapshot())
         if cancel.is_set():
             raise Cancelled()
         read = bool(job.get("read"))
@@ -192,9 +240,17 @@ class Jobs:
         skip = set(tl.get("done_pages", [])) if read else set(tl.get("done_pages", [])) - set(tl.get("en_pages", []))
         planned = job.get("pages") is not None
         wanted = job["pages"] if planned else translate.scope_pages(ws, job.get("scope")) or all_pages
-        # 网页批次完成时译文和 done_pages 已原子落盘；明确指定页码的续跑也要跳过这些页。
-        # 其他来源仍保留原有“指定页重新翻译”的行为，段落重译另有独立入口。
-        pages = wanted if planned and not job.get("cap_check") and cfg.get("engine") != "chatgpt_web" else [n for n in wanted if n not in skip]
+        baseline = job.get("retranslate_revisions")
+        if cfg.get("engine") == "chatgpt_web":
+            # 网页批次完成时译文与 done_pages 已原子写回；续跑绝不重发已完成页。
+            pages = [n for n in wanted if n not in skip]
+        elif planned and baseline is not None:
+            revisions = tl.get("page_revisions", {})
+            pages = [n for n in wanted if n not in skip or
+                     (str(n) in baseline and baseline[str(n)] == revisions.get(str(n), 0))]
+        else:
+            # Legacy queued explicit requests may not have started yet.
+            pages = wanted if planned and not job.get("cap_check") else [n for n in wanted if n not in skip]
         if not pages:
             self._write(ws, state="done", message=tr("选定范围已整理完") if read else tr("选定范围已译完"))
             return
@@ -213,6 +269,7 @@ class Jobs:
             return
 
         meter = usage.Meter(cfg.get("engine") or "")
+        meter.timing = timeline
 
         def report(done, total, message):
             if cancel.is_set():
@@ -224,7 +281,7 @@ class Jobs:
             failed = translate.translate_pages(ws, cfg, pages, cancel, report, meter, read)
         finally:  # 取消、出错也把已经花掉的记上
             run = meter.snapshot()
-            # 网页来源没有可核实的 token 统计，快照只带 engine，不含 calls。
+            self._write(ws, timing=timeline.snapshot())
             if run.get("calls"):
                 ws.update("job", lambda j: j.update(usage=run, usage_total=usage.merge(j.get("usage_total"), run)))
         minutes = max(1, round((time.time() - started) / 60))

@@ -8,11 +8,13 @@ import json
 import re
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from . import codeblocks, consistency, continuation, front_context, langs, page_check, prompts, prompts_en, segments, sentences, terms
 from ..engines import engines, netcheck
-from ..pdf import figures, pdfwork, sources, blank_pages
+from ..engines.timing import merge_lock, stage
+from ..pdf import figures, pdfwork, sources, blank_pages, xrefs
 from ..library.checks import block_problems, tex_problems
 from ..pdf.figures import normalize_figure, prepare_figures
 from ..app.i18n import tr
@@ -21,11 +23,10 @@ from ..library.paperdata import add_discussion, fill_zh, merge_blocks, set_block
 from ..library.store import Workspace
 from .page_scope import references_page, scope_pages
 from .translator_checks import journal, save_checks as _save_checks
-from .repair_guard import retains_content
-from . import instructions
+from . import batch_repair, instructions, figure_images, footnotes
 
 _merge_lock = threading.Lock()  # 并发翻译时，并入 paper.json 和重算原页定位一次只做一个
-_WEB_MAX_SOURCE_CHARS = 12000  # 给双语 JSON 留输出空间；超长单页仍作为独立批次
+_WEB_MAX_SOURCE_CHARS = 12000  # 给网页双语 JSON 留出稳定的输出空间
 # 用量到顶、余额不足这类错误，后面的批次也一定失败：直接停，剩下的页记为没译，等额度恢复后一键重试
 _QUOTA = re.compile(r"session limit|usage limit|rate limit reached|insufficient_quota|余额不足|额度|接口返回 40[12]|insufficient balance|API returned 40[12]", re.I)  # i18n-ok
 
@@ -50,20 +51,21 @@ def prepare(ws: Workspace) -> None:
 
 
 def _next_head(ws: Workspace, n: int, whole: bool = False) -> str:
-    """下一页开头的抽取文字。whole：整页都给（不能看图的引擎在分段交界处，续文可能排在表格、图注后面）。"""
-    p = ws.root / "extract" / f"page-{n:03d}.txt"
-    if not p.exists():
+    """下一页开头的抽取文字（粗体斜体、内部链接、脚注标记和正文一样标出）。whole：整页都给（不能看图的引擎在分段交界处，续文可能排在表格、图注后面）。"""
+    if not (ws.root / "extract" / f"page-{n:03d}.txt").exists():
         return ""
-    text = p.read_text(encoding="utf-8")
-    return text if whole else text[:1500]
+    text = prompts.page_text(ws, n)
+    if whole:
+        return text
+    head = text[:1500]
+    cut = re.search(r"\[[^\[\]\n]*(?:\]\([^)\n]*)?$", head)  # don't hand the model half a link
+    return head[:cut.start()] if cut else head
 
 
 def _normalize(data: dict, pages: list[int], taken: set[str]) -> dict:
     """补页码、去掉和已有块撞车的 id、丢掉明显无效的块。"""
     if isinstance(data, list):
         data = {"blocks": data}
-    if not isinstance(data, dict) or not isinstance(data.get("blocks") or [], list):
-        raise engines.InvalidModelOutput(tr("模型输出的块列表格式不对"))
     blocks = []
     for b in data.get("blocks") or []:
         if not isinstance(b, dict) or not b.get("type"):
@@ -82,10 +84,18 @@ def _normalize(data: dict, pages: list[int], taken: set[str]) -> dict:
         taken.add(bid)
         b["id"] = bid
         if b["type"] == "figure":
+            b.pop("translated_image", None)  # Only the image editor may publish an image result.
             b.setdefault("src", "")
             normalize_figure(b)  # 截图要等合并锁里 id 最终去重之后，见 prepare_figures
         blocks.append(b)
     data["blocks"] = blocks
+    # 标题、作者和参考文献条目不按 Markdown 显示：模型照抄过去的内部链接、脚注标记去掉
+    for k, v in (data.get("meta") or {}).items():
+        data["meta"][k] = xrefs.plain(v)
+    for r in data.get("references") or []:
+        if isinstance(r, dict):
+            r["text"] = xrefs.plain(r.get("text"))
+            r["page"] = pages[0]  # 一批里的条目算在这批的第一页：合并后按页排，几批并行译完的先后不影响顺序
     return data
 
 
@@ -99,18 +109,36 @@ def _problems(data: dict) -> list[str]:
 
 
 def _discard_web_answer(ws: Workspace, cfg: dict, prompt: str, images=None) -> None:
-    """校验失败时清除网页回答快照，下次请求重新生成。"""
+    """网页回答未通过校验时清除快照，下一次请求生成新结果。"""
     if cfg.get("engine") == "chatgpt_web":
         from ..engines import chatgpt_web
         chatgpt_web.discard(cfg["chatgpt_web"], prompt, ws.root, images)
 
 
-def _fill_problems(zh: dict) -> list[str]:
+def _protect_web_edits(ws: Workspace, pages: list[int]) -> None:
+    """整页写回前保护人工修改，避免替换掉已编辑的译文。"""
+    blocks = {b["id"] for b in ws.load("paper").get("blocks", []) if b.get("page") in pages}
+    if any(key.split("#", 1)[0] in blocks and not edit.get("reverted")
+           for key, edit in (ws.load("reader").get("edits") or {}).items()):
+        raise engines.EngineError("本批包含用户手动修改的译文，已保留原内容；请使用段落重译入口处理")
+
+
+def _web_phase(phase: str) -> str:
+    return {"answer": "ChatGPT 正在生成译文", "awaiting-file": "回答已结束，等待结果附件",
+            "file-ready": "结果附件已出现", "downloading": "正在下载结果附件", "downloaded": "附件已下载，正在校验",
+            "validated": "结果已接收，正在检查译文并写回", "text-fallback": "已回收当前回答中的完整 JSON",
+            "project-sync": "正在核对项目资料"}.get(phase, "ChatGPT 网页：" + phase)
+
+
+def _fill_problems(zh: dict, source=None) -> list[str]:
     # Fill responses use keys instead of blocks; table heads still need math checks.
     blocks = [{"id": k, "type": "table", "head": v} if k.endswith("#head") else
               {"id": k, "type": "para", "zh": v}
               for k, v in zh.items() if isinstance(v, str) or k.endswith("#head")]
-    return _problems({"blocks": blocks})
+    problems = _problems({"blocks": blocks})
+    for key, value in (source or {}).items():
+        problems.extend(footnotes.missing(key, zh.get(key), footnotes.markers(value)))
+    return problems
 
 
 def _fill_batch(ws: Workspace, cfg: dict, batch: list[int], cancel, say, meter=None, wait=False) -> None:
@@ -119,6 +147,8 @@ def _fill_batch(ws: Workspace, cfg: dict, batch: list[int], cancel, say, meter=N
     blocks = [b for b in ws.load("paper").get("blocks", []) if b.get("page") in batch]
     empty = [n for n in batch if not any(b.get("page") == n for b in blocks)]
     items = prompts_en.todo(blocks)
+    if cfg.get("translate_figure_text") is False:
+        items = {k: v for k, v in items.items() if not k.endswith("#image")}
     if not items:
         with _merge_lock:
             fill_zh(ws, {}, [n for n in batch if n not in empty], set())
@@ -134,32 +164,28 @@ def _fill_batch(ws: Workspace, cfg: dict, batch: list[int], cancel, say, meter=N
         raise
     if not isinstance(data, dict) or not isinstance(data.get("zh"), dict):
         _discard_web_answer(ws, cfg, prompt)
-        raise engines.InvalidModelOutput(tr("模型输出的格式不对（缺 zh）"))
-    problems = _fill_problems(data["zh"])
+        raise engines.EngineError(tr("模型输出的格式不对（缺 zh）"))
+    with stage(meter, "validate"):
+        problems = _fill_problems(data["zh"], items)
     if problems:
         say(tr("第 {page} 页起有 {n} 处公式或格式问题，正在让模型修正", page=batch[0], n=len(problems)))
         try:
-            fixed = engines.parse_json(engines.run(cfg, instructions.apply(prompts.repair(prompts.dump(data), problems), cfg), ws.root, None, cancel, meter))
-            if (isinstance(fixed, dict) and isinstance(fixed.get("zh"), dict)
-                    and data["zh"].keys() <= fixed["zh"].keys()
-                    and retains_content(data, fixed)
-                    and len(_fill_problems(fixed["zh"])) < len(problems)):
-                data = fixed
+            data = batch_repair.repair(data, "zh", problems,
+                lambda p: engines.run(cfg, instructions.apply(p, cfg), ws.root, None, cancel, meter),
+                lambda d: _fill_problems(d["zh"], items))
         except engines.EngineError as e:
             journal(ws, tr("第 {pages} 页修正失败，保留原译：{err}", pages=batch, err=e))
-    if cancel.is_set() or not ws.root.exists():
-        raise engines.Cancelled()
-    with _merge_lock:
-        if cancel.is_set() or not ws.root.exists():
-            raise engines.Cancelled()
+    instructions.filter_figure_text(data, cfg)
+    with merge_lock(meter, _merge_lock):
         _unify_terms(ws, data, batch, {k: v if isinstance(v, str) else json.dumps(v, ensure_ascii=False) for k, v in items.items()})
-        missing = fill_zh(ws, data, [n for n in batch if n not in empty], set(items), sentences.unmark_fill(data["zh"], ends))
+        with stage(meter, "save"):
+            missing = fill_zh(ws, data, [n for n in batch if n not in empty], set(items), sentences.unmark_fill(data["zh"], ends))
         _save_checks(ws, data.get("checks"), batch)
         if not missing:
             continuation.fill_empty(ws, empty, wait)
     if missing:
         _discard_web_answer(ws, cfg, prompt)
-        raise engines.InvalidModelOutput(tr("漏译了 {n} 处（{ids}）", n=len(missing), ids=", ".join(missing[:5])))
+        raise engines.EngineError(tr("漏译了 {n} 处（{ids}）", n=len(missing), ids=", ".join(missing[:5])))
 
 
 def _one_batch(ws: Workspace, cfg: dict, batch: list[int], total_pages: int, cancel, say, meter=None, read=False,
@@ -178,42 +204,44 @@ def _one_batch(ws: Workspace, cfg: dict, batch: list[int], total_pages: int, can
         prompt = prompts_en.structure(ws, batch, mode, head, skip_head, peek)
     else:
         prompt = prompts.translate(ws, batch, mode, head, skip_head, peek, front_context.build(ws.root, batch[0]) if front else "")
-    if not read:
-        prompt = instructions.apply(prompt, cfg)
-    # 仅完整结构化任务携带文件交付信封；补译与公式修正仍沿用文本契约。
+    prompt = prompt if read else instructions.apply(prompt, cfg)
     task_cfg = cfg
     if cfg.get("engine") == "chatgpt_web":
         task_cfg = {**cfg, "chatgpt_web": {**cfg.get("chatgpt_web", {}), "requested_pages": batch,
-                                          "read_only": read, "progress": lambda phase: say(_web_phase(phase))}}
+                                             "read_only": read, "progress": lambda phase: say(_web_phase(phase))}}
     text = engines.run(task_cfg, prompt, ws.root, images, cancel, meter)
     parse_started = time.monotonic()
     try:
         data = engines.parse_json(text)
     except engines.EngineError:
-        (ws.root / "extract" / f"failed-{batch[0]:03d}.txt").write_text(text, encoding="utf-8")
+        failed = ws.root / "extract"
+        failed.mkdir(parents=True, exist_ok=True)
+        name = f"failed-{batch[0]:03d}.txt" if cfg.get("engine") == "chatgpt_web" else f"failed-{batch[0]:03d}-{uuid.uuid4().hex}.txt"
+        (failed / name).write_text(text, encoding="utf-8")
         _discard_web_answer(ws, task_cfg, prompt, images)
         raise
     try:
         data = _normalize(data, batch, _taken(ws, batch))
-    except (ValueError, KeyError, TypeError, engines.InvalidModelOutput) as e:
+    except (ValueError, KeyError, TypeError, engines.InvalidModelOutput) as error:
         _discard_web_answer(ws, task_cfg, prompt, images)
-        raise engines.InvalidModelOutput(tr("模型输出的块格式不对：{err}", err=e)) from e
-    problems = _problems(data)
+        raise engines.InvalidModelOutput(tr("模型输出的块格式不对：{err}", err=error)) from error
+    expected_notes = footnotes.expected(ws, data["blocks"])
+
+    def validate(candidate):
+        codeblocks.restore_sql_lines(candidate["blocks"], ws.root / "extract")
+        return _problems(candidate) + footnotes.problems(candidate["blocks"], expected_notes, read)
+
+    with stage(meter, "validate"):
+        problems = validate(data)
     if problems:  # 给一次修的机会
         say(tr("第 {page} 页起有 {n} 处公式或格式问题，正在让模型修正", page=batch[0], n=len(problems)))
         try:
-            repair = prompts.repair(prompts.dump(data), problems)
-            fixed = engines.parse_json(engines.run(cfg, repair if read else instructions.apply(repair, cfg), ws.root, None, cancel, meter))
-            fixed = _normalize(fixed, batch, _taken(ws, batch))
-            if fixed["blocks"] and retains_content(data, fixed) and len(_problems(fixed)) < len(problems):
-                data = fixed
+            data = batch_repair.repair(data, "blocks", problems,
+                lambda p: engines.run(cfg, p if read else instructions.apply(p, cfg), ws.root, None, cancel, meter),
+                validate, normalize=lambda result: _normalize(result, batch, _taken(ws, batch)))
         except engines.EngineError as e:
             journal(ws, tr("第 {pages} 页修正失败，保留原译：{err}", pages=batch, err=e))
-    if cancel.is_set() or not ws.root.exists():
-        raise engines.Cancelled()
-    with _merge_lock:
-        if cancel.is_set() or not ws.root.exists():
-            raise engines.Cancelled()
+    with merge_lock(meter, _merge_lock):
         if cfg.get("engine") == "chatgpt_web":
             _protect_web_edits(ws, batch)
             record_path = task_cfg["chatgpt_web"].get("_task_record")
@@ -221,7 +249,7 @@ def _one_batch(ws: Workspace, cfg: dict, batch: list[int], total_pages: int, can
                 from ..engines import web_translation
                 if web_translation.file_hash(ws.root / "source.pdf") != web_translation.read_json(record_path)["source_sha256"]:
                     raise engines.EngineError("原始 PDF 已改变，结果保留但未写回，请核对论文来源")
-            # 模型不能给本地进度、目标语言或外部页块发写入指令。
+            # 网页返回不能覆盖本地任务元数据，也不能夹带批次外区块。
             data.pop("translation", None)
             for block in data["blocks"]:
                 block.pop("_after", None)
@@ -238,15 +266,21 @@ def _one_batch(ws: Workspace, cfg: dict, batch: list[int], total_pages: int, can
         data = _normalize(data, batch, _taken(ws, batch))  # 并发时别的批可能刚占用了同名 id
         missing = page_check.missing_pages(ws, batch, data)  # 有的页有内容、有的页整页漏了：漏的页不算译完
         keep = [n for n in batch if n not in missing]
-        prepare_figures(ws.root, data["blocks"], total_pages)
+        if not read:
+            instructions.filter_figure_text(data, cfg)
+        with stage(meter, "crop"):
+            prepare_figures(ws.root, data["blocks"], total_pages)
         _unify_terms(ws, data, batch)
         drop = _one_references(ws, data, batch)
-        merge_blocks(ws, data, done=keep, replace_pages=keep, en_only=read, drop_ids=drop,
-                     protect_edits=cfg.get("engine") == "chatgpt_web")
+        with stage(meter, "save"):
+            merge_blocks(ws, data, done=keep, replace_pages=keep, en_only=read, drop_ids=drop,
+                         protect_edits=cfg.get("engine") == "chatgpt_web")
         _save_checks(ws, data.get("checks"), batch)
         try:
-            pdfwork.locate(ws.root)
-            figures.fill(ws)  # 按定位重截：PDF 图形边界认出了图就替换模型框截的图
+            with stage(meter, "locate"):
+                pdfwork.locate(ws.root)
+            with stage(meter, "crop"):
+                figures.fill(ws)
         except Exception:  # noqa: BLE001 —— 定位失败不影响阅读
             log.exception("locate 失败 %s", ws.id)
     if cfg.get("engine") == "chatgpt_web":
@@ -254,25 +288,11 @@ def _one_batch(ws: Workspace, cfg: dict, batch: list[int], total_pages: int, can
         record_path = task_cfg["chatgpt_web"].get("_task_record")
         if record_path:
             record = web_translation.read_json(record_path)
-            record.update(merged_pages=keep, missing_pages=missing, parse_merge_ms=round((time.monotonic() - parse_started) * 1000))
+            record.update(merged_pages=keep, missing_pages=missing,
+                          parse_merge_ms=round((time.monotonic() - parse_started) * 1000))
             web_translation.write_json_atomic(record_path, record)
     if missing:
         raise page_check.MissingPages(missing)
-
-
-def _protect_web_edits(ws: Workspace, pages: list[int]) -> None:
-    """请求前与写回前都检查用户修改，避免整页替换使人工译文失去原块锚点。"""
-    blocks = {b["id"] for b in ws.load("paper").get("blocks", []) if b.get("page") in pages}
-    if any(key.split("#", 1)[0] in blocks and not edit.get("reverted")
-           for key, edit in (ws.load("reader").get("edits") or {}).items()):
-        raise engines.EngineError("本批包含用户手动修改的译文，已保留原内容；请使用段落重译入口处理")
-
-
-def _web_phase(phase: str) -> str:
-    return {"answer": "ChatGPT 正在生成译文", "awaiting-file": "回答已结束，等待结果附件",
-            "file-ready": "结果附件已出现", "downloading": "正在下载结果附件", "downloaded": "附件已下载，正在校验",
-            "validated": "结果已接收，正在检查译文并写回", "text-fallback": "已回收当前回答中的完整 JSON",
-            "project-sync": "正在核对项目资料"}.get(phase, "ChatGPT 网页：" + phase)
 
 
 def _one_references(ws: Workspace, data: dict, batch: list[int]) -> list[str]:
@@ -301,7 +321,7 @@ def _unify_terms(ws: Workspace, data: dict, batch: list[int], en_of: dict | None
 
 
 def _batches(pages: list[int], size: int, en_pages: set[int], lengths: dict[int, int] | None = None) -> list[list[int]]:
-    """只合并连续且处理方式相同的页；网页批次还限制抽取正文总长度。"""
+    """分批：只把连续的页放一批（续传时中间隔着已译的页，跨页续文对不上）；只读原文整理过的页（补译文）和要从头译的页不混在一批里。"""
     out: list[list[int]] = []
     chars = 0
     for n in pages:
@@ -339,7 +359,6 @@ def translate_pages(ws: Workspace, cfg: dict, pages: list[int], cancel, report, 
     paper = ws.load("paper")
     total_pages = paper.get("meta", {}).get("page_count") or 0
     en_pages = set() if read else set(paper.get("translation", {}).get("en_pages", []))
-    # 网页引擎串行使用同一会话，允许一轮处理更多页，减少网页往返次数。
     web = cfg.get("engine") == "chatgpt_web"
     file_mode = web and (cfg.get("chatgpt_web") or {}).get("output_mode", "text") in ("file", "auto")
     if web:
@@ -347,15 +366,12 @@ def translate_pages(ws: Workspace, cfg: dict, pages: list[int], cancel, report, 
         size = max(1, min(12 if file_mode else 4, int(options.get("file_batch_pages" if file_mode else "batch_pages") or 4)))
     else:
         size = max(1, int(cfg.get("batch_pages") or 2))
-    # 稠密页面即使不足四页，双语 JSON 也可能很长；按抽取正文长度限制网页批次。
     lengths = None
     if web and not file_mode:
-        lengths = {}
-        for n in pages:
-            source = ws.root / "extract" / f"page-{n:03d}.txt"
-            lengths[n] = len(source.read_text(encoding="utf-8")) if source.is_file() else 0
+        lengths = {n: len((ws.root / "extract" / f"page-{n:03d}.txt").read_text(encoding="utf-8"))
+                   if (ws.root / "extract" / f"page-{n:03d}.txt").is_file() else 0 for n in pages}
     # 分段并行：切成几段连续的页同时译，段内一批接一批（见 segments.py）
-    k = 1 if web else segments.workers(cfg.get("concurrency"), len(_batches(pages, size, en_pages)))
+    k = 1 if web else segments.workers(cfg.get("concurrency"), len(_batches(pages, size, en_pages, lengths)))
     lanes = [_batches(seg, size, en_pages, lengths) for seg in segments.plan(pages, size, k, ws.root)]
     if web:
         from ..engines import web_translation
@@ -452,7 +468,6 @@ def translate_pages(ws: Workspace, cfg: dict, pages: list[int], cancel, report, 
                 if cancel.is_set():
                     raise engines.Cancelled()
                 if cfg.get("engine") == "chatgpt_web" and isinstance(e, engines.InvalidModelOutput):
-                    # 回答已完成且格式无效时，可重新生成一次；第二次仍失败只记当前批，不连坐后续页。
                     continue
                 if cfg.get("engine") == "chatgpt_web" or _QUOTA.search(err) or netcheck.offline(err):
                     state["quota"] = err[:300]
@@ -493,6 +508,9 @@ def translate_pages(ws: Workspace, cfg: dict, pages: list[int], cancel, report, 
         except Exception as e:  # noqa: BLE001
             journal(ws, tr("术语一致性检查没做成：{err}", err=str(e)[:300]))
             log.warning("术语一致性检查失败 %s: %s", ws.id, e)
+    if not read and state["ok"]:
+        figure_images.generate(ws, cfg, state["ok"], cancel,
+                               lambda msg: report(state["done"], len(pages), msg), meter)
     journal(ws, tr("结束，{n} 页失败：{pages}", n=len(failed), pages=sorted(failed)) if failed else tr("结束，全部成功"))
     return failed
 
@@ -509,6 +527,7 @@ def answer(ws: Workspace, cfg: dict, note_id: str, cancel) -> None:
 
 def retranslate(ws: Workspace, cfg: dict, key: str, hint: str, cancel) -> None:
     prompt, en_ends = prompts.retranslate(ws, key, hint)
+    cfg = {**cfg, "target": langs.of_paper(ws.load("paper").get("meta"))}
     prompt = instructions.apply(prompt, cfg)
     data = engines.parse_json(engines.run(engines.for_translation(cfg), prompt, ws.root, None, cancel))
     zh = (data or {}).get("zh", "").strip() if isinstance(data, dict) else ""

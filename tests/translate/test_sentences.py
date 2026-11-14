@@ -36,12 +36,30 @@ class UnmarkTest(unittest.TestCase):
         self.assertIn("‖$", b["en"])
         self.assertEqual(len(b["sents"]), 2)
 
+    def test_currency_does_not_mask_alignment_or_trigger_math_repair(self):
+        from easyread.library.checks import block_problems
+
+        text = "Base $100 (intercept). ‖ Adjust by -$50, $0 or $50 using $2x+1$."
+        self.assertEqual(sentences.unmark(text), (text.replace(" ‖ ", " "), [22]))
+        problems, formulas = block_problems([{"id": "p", "type": "para", "en": text + " One more $5."}])
+        self.assertEqual(problems, [])
+        self.assertEqual(formulas, [("p", "2x+1", False)])
+
     def test_norm_bars_in_text_are_not_boundaries(self):
         self.assertEqual(sentences.unmark("‖w‖ bound"), ("‖w‖ bound", None))
         self.assertEqual(sentences.unmark("norm ‖x‖. ‖ Next one."), ("norm ‖x‖. Next one.", [9]))
         b = {"id": "s1", "type": "heading", "en": "Bounds on ‖w‖", "zh": "‖w‖ 的界"}
         sentences.attach([b])
         self.assertEqual((b["en"], b["zh"]), ("Bounds on ‖w‖", "‖w‖ 的界"))
+
+    def test_boundary_after_a_bold_or_italic_sentence(self):
+        # Bold run-in headings come back as "**Overall findings.**‖": the closing marks sit between the stop and ‖.
+        b = {"id": "p", "type": "para", "en": "**Overall findings.** ‖ Table 2 shows it.", "zh": "**总体发现。**‖表 2 给出了结果。"}
+        sentences.attach([b])
+        self.assertEqual((b["en"], b["zh"]), ("**Overall findings.** Table 2 shows it.", "**总体发现。**表 2 给出了结果。"))
+        self.assertEqual(b["sents"], [[21, 9], [39, 19]])
+        self.assertEqual(sentences.unmark("*斜体句子。*‖下一句。"), ("*斜体句子。*下一句。", [7]))
+        self.assertEqual(sentences.unmark("**‖w‖** bound"), ("**‖w‖** bound", None))  # a bold norm is still not a boundary
 
     def test_korean_keeps_space_between_sentences(self):
         self.assertEqual(sentences.unmark("첫 문장입니다. ‖ 다음"), ("첫 문장입니다. 다음", [8]))

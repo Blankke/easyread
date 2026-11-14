@@ -29,7 +29,7 @@
       '<div class="cf-title">' + PR.t("选几页翻译") + "</div>" +
       '<div class="cf-body">' + PR.t("这里只列还没译的 {n} 页，点页码选中。", { n: todo.length }) + "</div>" +
       '<div class="pp-grid">' + todo.map((n) => '<button class="pp-page" data-pp="' + n + '">' + n + "</button>").join("") + "</div>" +
-      '<div class="cf-acts"><button class="btn sm pp-all" data-pp-all>' + PR.t("全选") + '</button><span class="pp-gap"></span>' +
+      PR.translationExtraHtml() + '<div class="cf-acts"><button class="btn sm pp-all" data-pp-all>' + PR.t("全选") + '</button><span class="pp-gap"></span>' +
       '<button class="btn sm" data-pp-cancel>' + PR.t("取消") + '</button><button class="btn sm accent" data-pp-go disabled></button></div>');
     document.body.appendChild(box);
     const go = box.querySelector("[data-pp-go]"), all = box.querySelector("[data-pp-all]");
@@ -47,9 +47,10 @@
       if (e.target.closest("[data-pp-cancel]")) return close();
       if (e.target.closest("[data-pp-go]") && picked.size) {
         const spec = [...picked].sort((a, b) => a - b).join(",");
+        const translation_extra = box.querySelector('[data-translation-extra]').value.trim();
         close();
         try {
-          await PR.api("/api/p/" + i.id + "/translate", { method: "POST", body: { pages: spec } });
+          await PR.api("/api/p/" + i.id + "/translate", { method: "POST", body: { pages: spec, translation_extra } });
           PR.toast(PR.t("已开始翻译")); PR.lib.load();
         } catch (err) { PR.toast(PR.esc(err.message)); }
       }

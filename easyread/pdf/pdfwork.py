@@ -17,6 +17,7 @@ from ..translate import float_order
 from .caption_extent import column as _column, overlap_x as _overlap_x, page_locs as _page_locs
 from .caption_extent import extend_captioned as _extend_captioned
 from .text_regions import locate_prose
+from .render_limits import render_page
 from ..library.store import Workspace, write_json_atomic
 
 # PDFium is not thread-safe, even when threads open separate documents.
@@ -26,19 +27,27 @@ _LAYOUT_LOCK = threading.RLock()
 
 
 @contextmanager
-def open_pdf(pdf: Path):
+def open_pdf(pdf: Path | bytes):
     """所有 PDFium 调用与资源释放共用一把锁，包括操作不同文档的线程。"""
     import pypdfium2 as pdfium
-    with _PDFIUM_LOCK, closing(pdfium.PdfDocument(str(pdf))) as doc:
+    with _PDFIUM_LOCK, closing(pdfium.PdfDocument(pdf if isinstance(pdf, bytes) else str(pdf))) as doc:
         yield doc
 
 
-def render_pages(pdf: Path, out_dir: Path, scale: float = 2.4, quality: int = 84) -> list[dict]:
+def render_pages(pdf: Path, out_dir: Path, scale: float = 2.4, quality: int = 84, *, reopen: bool = False) -> list[dict]:
     out_dir.mkdir(parents=True, exist_ok=True)
     pages = []
-    with open_pdf(pdf) as doc:
-        for i in range(len(doc)):
-            with closing(doc[i]) as page, closing(page.render(scale=scale)) as bitmap:
+    from contextlib import ExitStack
+    with ExitStack() as stack:
+        doc = stack.enter_context(open_pdf(pdf))
+        count = len(doc)
+        if reopen:
+            stack.close()
+        for i in range(count):
+            page_stack = ExitStack()
+            if reopen:
+                doc = page_stack.enter_context(open_pdf(pdf))
+            with page_stack, closing(doc[i]) as page, closing(render_page(page, scale)) as bitmap:
                 w, h = page.get_size()
                 with bitmap.to_pil() as raw, raw.convert("RGB") as img:
                     name = f"page-{i + 1:03d}.webp"
@@ -106,7 +115,7 @@ def _char_box(box, bounds, rotation: int) -> list[float] | None:
 def crop(root: Path, page: int, box: list[float], out_name: str, scale: float = 3.0) -> str:
     """box 是按页宽高归一化的 [x0, y0, x1, y1]；输出到 figures/，返回相对路径。"""
     with open_pdf(Workspace(root).source_pdf) as doc:
-        with closing(doc[page - 1]) as pdf_page, closing(pdf_page.render(scale=scale)) as bitmap:
+        with closing(doc[page - 1]) as pdf_page, closing(render_page(pdf_page, scale)) as bitmap:
             with bitmap.to_pil() as raw, raw.convert("RGB") as img:
                 W, H = img.size
                 x0, y0, x1, y1 = box
@@ -175,12 +184,18 @@ def _boxes(chars, idx, a: int, b: int) -> list[list[float]]:
     return boxes
 
 
+_MD_LINK = re.compile(r"\[((?:\\.|[^\]\\\n])*)\]\([^)\s]*\)")
+
+
 def block_english(block: dict) -> str:
+    """The block's original text as printed: link targets ([words](#tab:3), [words](https://…)) are not on the page."""
     if block.get("type") == "list":
-        return " ".join(it.get("en", "") for it in block.get("items", []))
-    if block.get("type") in ("table", "figure"):
-        return block.get("caption_en", "")
-    return block.get("en", "")
+        text = " ".join(it.get("en", "") for it in block.get("items", []))
+    elif block.get("type") in ("table", "figure"):
+        text = block.get("caption_en", "")
+    else:
+        text = block.get("en", "")
+    return _MD_LINK.sub(lambda m: m.group(1), text or "")
 
 
 def locate(root: Path) -> dict:
@@ -325,7 +340,7 @@ def engine_image(root: Path, n: int) -> Path:
         if not out.exists():
             out.parent.mkdir(parents=True, exist_ok=True)
             with open_pdf(Workspace(root).source_pdf) as doc:
-                with closing(doc[n - 1]) as page, closing(page.render(scale=2.0)) as bitmap:
+                with closing(doc[n - 1]) as page, closing(render_page(page, 2.0)) as bitmap:
                     with bitmap.to_pil() as raw, raw.convert("RGB") as img:
                         img.save(out, "JPEG", quality=82)
     return out
@@ -363,7 +378,7 @@ def warm_variants(root: Path, width: int = PANEL_WIDTH) -> None:
 
 def prepare(root: Path) -> list[dict]:
     """渲染原页 + 抽文字，返回 meta.pages。"""
-    source = Workspace(root).source_pdf
-    pages = render_pages(source, root / "pages")
-    extract_text(source, root / "extract")
-    return pages
+    from .prepare_worker import prepare_isolated
+    # Serialize with in-process PDF work, too, rather than doubling peak memory.
+    with _PDFIUM_LOCK:
+        return prepare_isolated(root)

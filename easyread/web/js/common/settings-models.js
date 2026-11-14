@@ -5,6 +5,15 @@
   "use strict";
   /* efforts：能传的推理强度（和后端 agent_cli.SPECS 一致），空的就不显示推理强度 */
   PR.agentClis = {
+    qoder: { name: "Qoder CN CLI", url: "https://docs.qoder.cn/cli/installation", efforts: [],
+      hint: PR.t("使用本机已登录的 Qoder CN；模型留空跟随 CLI 默认，看图能力取决于所选模型"),
+      setup: PR.t("安装并登录 Qoder CN CLI") },
+    opencode: { name: "OpenCode CLI", url: "https://opencode.ai/docs/", efforts: [],
+      hint: PR.t("模型名填写 provider/model，可在终端运行 opencode models 查看；留空使用 OpenCode 默认模型"),
+      setup: PR.t("安装 OpenCode 并配置模型") },
+    zcode: { name: "ZCode CLI", url: "https://github.com/zai-org/ZCode/tree/main/apps/zcode-cli/docs/usage", efforts: [], defaultOnly: true,
+      hint: PR.t("使用本机 ZCode 登录态；模型和推理选项跟随 ZCode 设置，看图能力取决于所选模型"),
+      setup: PR.t("安装并登录 ZCode CLI") },
     grok: { name: "Grok Build", url: "https://x.ai/cli", efforts: ["low", "medium", "high"] },
     agy: { name: "Antigravity CLI", url: "https://antigravity.google/docs/cli", efforts: ["low", "medium", "high", "xhigh", "max"] },
     cursor: { name: "Cursor CLI", url: "https://cursor.com/docs/cli/installation", efforts: [] },

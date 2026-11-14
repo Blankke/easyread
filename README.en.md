@@ -25,7 +25,7 @@ Runs locally. You choose the model service and whether to keep your library in a
 
 ## How it differs from "throw the PDF into a translator"
 
-- **Reads like a typeset book.** Serif body text, comfortable line length and spacing. Equations are re-rendered with KaTeX, tables become clean three-line tables, references stay in the original. One click in the top bar for dark mode.
+- **Reads like a typeset book.** Serif body text, comfortable line length and spacing. Equations are re-rendered with KaTeX, tables become clean three-line tables, references stay in the original, and bold and italic in the original carry over to the translation. One click in the top bar for dark mode.
 - **The original is always right there.** Toggle "bilingual" to show the English under each paragraph. Open the original page on the right: it follows your reading position and draws a box around the paragraph you're on. Hold `Ctrl` and scroll over the original pages to zoom the PDF (50%–400%) while keeping the window and panel width unchanged; scroll horizontally to explore enlarged pages.
 - **Find text in a paper.** Press Ctrl / ⌘ + F to search both the original and the translation, with a match count and highlighted results. Enter / Shift + Enter moves to the next / previous match.
 - **Translation and commentary are kept apart.** The main text is only the faithful translation. AI explanations and answers go in the margin, so you always know what the paper actually says.
@@ -52,6 +52,7 @@ Runs locally. You choose the model service and whether to keep your library in a
 | **Claude Code** (recommended) | [Claude Code](https://docs.claude.com/en/docs/claude-code/setup) installed and logged in | No API key, uses your subscription. Looks at the page image to check equations. Best quality |
 | **Codex CLI** | [Codex](https://github.com/openai/codex) installed and logged in | No API key, uses your ChatGPT account |
 | **CodeBuddy CLI** | Install and sign in using the [official CLI docs](https://www.codebuddy.cn/docs/cli/headless); your account needs CLI access | No API key. Type the model name, or leave it empty for the CLI default. [The current free trial does not include CLI access](https://www.codebuddy.cn/docs/workbuddy/Pricing); credits are shared with WorkBuddy on the same account |
+| **ZCode CLI (experimental)** | Install and sign in using the [official CLI guide](https://github.com/zai-org/ZCode/tree/main/apps/zcode-cli/docs/usage), with `zcode` available on PATH | Reuses the local login and model settings. Supports translation, Ask AI and image attachments when the selected model supports them. Real-account calls still need verification |
 | **Grok Build / Antigravity CLI / Cursor CLI** | [Grok Build](https://x.ai/cli), [Antigravity CLI](https://antigravity.google/docs/cli) or [Cursor CLI](https://cursor.com/docs/cli/installation) installed and logged in | No API key, uses that subscription. Type the model name, or leave it empty for the CLI's default |
 | **API · China**: DeepSeek / Zhipu / Alibaba Bailian (Qwen) / Kimi / SiliconFlow / ModelScope | API key | Zhipu GLM-4.7-Flash and SiliconFlow small models are free; DeepSeek costs cents per paper |
 | **API · International**: OpenAI / Anthropic / Gemini / OpenRouter / Groq / Cerebras | API key | Gemini, OpenRouter, Groq, Cerebras have free tiers |
@@ -110,64 +111,6 @@ easyread
 
 Your browser opens `http://127.0.0.1:8765`. The server only listens on localhost.
 
-To build a **single portable Windows x64 EXE**, run this in Windows PowerShell from the project directory:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_windows_portable.ps1 -InstallDependencies -VerifyLaunch
-# Subsequent builds automatically activate the project's Windows .venv
-npm run dist:portable
-```
-
-The build machine needs Node.js 22+, Windows Python 3.10+, and the project virtual environment (create it with `py -3.12 -m venv .venv` if needed). The output is `dist/electron/EasyRead-Portable-<version>-x64.exe`; recipients only need this file, with Python, Node.js, and Electron already bundled. Double-click to extract and launch. Papers and settings live in `data` beside the EXE, falling back to `~/EasyRead` if that location is not writable. Keep `data` when moving or replacing the EXE; portable builds are updated by replacing the executable. ChatGPT login cache remains in `%APPDATA%\EasyRead` on the current computer. Configure a model service or sign into ChatGPT on first use; CLI providers still require their respective CLI installations. Source checkout papers, settings, and credentials are excluded from the package.
-
-In the Electron desktop app, open Settings → Model → Open ChatGPT, sign in, and refresh the model list. Add a ChatGPT website model card and set it for translation or Ask AI. Translation uploads the PDF, reading marks, and required attachments, then writes translated pages back to the reader. Ask AI sends only text: the question, referenced passages, and relevant highlights. It asks ChatGPT to retrieve the existing project paper by title and source, without uploading PDFs or notes or pasting the entire paper again. Answers must state their evidence limits when the project paper is unavailable. Web tasks run in a dedicated hidden window. During a task, opening the pane shows a read-only live preview and the current stage; resizing or closing it and navigating EasyRead leave the execution page unchanged. When idle, the pane shows the interactive website for sign-in and conversation inspection. If sign-in or verification is needed, EasyRead asks you to open ChatGPT yourself. After completing it, close the website and retry. When opened manually, drag its left border to resize it, or drag the border to the right edge and release to close it; the top Close button also works while background tasks continue. Retrying the same batch first recovers a completed answer from its original web conversation. If page controls or delivery need attention, open the embedded website to check before retrying. This source requires the Electron desktop app.
-
-The first web translation task prepares the “翻译” project when needed, creating it and configuring shared instructions and project-only memory while preserving existing instructions. Successful configuration is saved per account and instruction version. Later batches reuse the paper conversation, including after restarting, without repeatedly opening project settings. An invalid project address or changed instruction version triggers setup again; use the `--setup-project` command below to explicitly recheck settings. Papers and Ask AI threads have separate project conversations. Ask AI reuses the existing project without changing its instructions or memory mode. Authentication uses the embedded Chromium session; transient connection or editor failures allow one refresh before submission, while pending answers are preserved. Project operations, model reads, and task submission run in sequence. Opening or closing the website changes its display state.
-
-The library and reader top bars both offer Open ChatGPT website. Website translation processes up to four pages per batch by default and uses smaller batches for dense pages; translation settings allow one to four pages. Website tasks run serially in the same conversation. Each completed answer is saved before it is parsed and merged into `paper.json`; missing pages are retried individually. After a restart, completed pages are skipped and a saved answer can be parsed again without sending the same batch twice.
-
-Website delivery supports `text` (default), experimental `file`, and `auto`. File delivery includes the complete bilingual structured result in a task envelope, verified independently by Electron and the backend before the existing validation and merge pipeline. `auto` accepts a complete matching envelope from the same answer if attachment collection fails. An uncertain submission remains pending for recovery or explicit user review; download failure does not resend translation. File batches default to 4 pages, configurable from 1 to 12; text batches retain their 4-page and density limits.
-
-Translation conversations rotate within the single translation project after 12 requests or 48 pages by default. Automatic rotation can be disabled; the optional message threshold defaults to 0 (disabled). A per-paper button schedules manual rotation. Pending requests block rotation, historical URLs remain available, and Ask AI threads stay independent. Each translation task receives a bounded, frozen snapshot derived from local paper and reader data. PDF and page images remain the factual source.
-
-Shared project glossary synchronization defaults to off, with a local file-count guard of 5. Participating papers contribute to one logical glossary, grouped by paper and target language. A new version must be visibly confirmed before the app removes its own retired version. Unverifiable controls, identifiers, quota or upload status cause a visible fallback to conversation attachments. Project context never controls local completion state or overwrites reader edits.
-
-If a website answer uses single backslashes in TeX formulas, EasyRead repairs the JSON escaping while preserving the formulas. A response that still cannot be parsed is regenerated once for that batch; if it remains invalid, the original answer is kept for diagnosis and later batches continue.
-
-For a ChatGPT website model, the Ask AI model menu offers answer depth (Brief, Balanced, Detailed, Rigorous, Deep). EasyRead adds the chosen depth instruction to each question to guide detail and verification; ChatGPT controls its own internal reasoning effort. Once the website answer is complete and stable, it appears in the EasyRead chat panel and is saved in the conversation history.
-
-On Windows, sign in through the desktop app before verifying a real paper, then exit the desktop app so processes do not share its login cache. The paper check uploads the PDF, sends one test question, and reports the answer length and JSON validation result. The local background input check requires no account.
-
-```powershell
-# Run web integration regression tests without an account
-npm run test:web
-# Check the hidden viewport, input, submission, and long answer extraction
-node .\scripts\dev_desktop.cjs .\scripts\verify_web_background.cjs
-# Real Electron download and offline recovery against a local HTTP fixture; no account required
-node .\scripts\dev_desktop.cjs .\scripts\verify_web_artifact.cjs
-# Log stage timings to distinguish generation from local delivery
-$env:EASYREAD_WEB_TRACE="1"
-# Check paper upload, submission, and answer recovery
-node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs .\library\<paper-id>\source.pdf "model name"
-Remove-Item Env:EASYREAD_WEB_TRACE
-# Explicitly recheck project settings
-node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --setup-project
-# Run the production queue and save translated pages (omit pages to resume all remaining pages)
-. .\.venv\Scripts\Activate.ps1
-python -c "import sys; print(sys.executable)"
-node .\scripts\dev_desktop.cjs .\scripts\verify_web_translation.cjs <paper-id> 3-4 --monitor
-# Isolated synthetic document; sends real model requests and keeps outputs/web-translation artifacts
-node .\scripts\dev_desktop.cjs .\scripts\verify_web_translation.cjs --fixture file 4
-node .\scripts\dev_desktop.cjs .\scripts\verify_web_translation.cjs --fixture text 4
-# Optional project sync: --project-sync; rotate after each page:
-node .\scripts\dev_desktop.cjs .\scripts\verify_web_translation.cjs --fixture file 2 --rotate-after-one
-node .\scripts\web_translation_metrics.cjs .\outputs\web-translation\<run>\library\transport-fixture
-```
-
-File fixtures also accept 8 or 12 pages. Synthetic tests validate transport, page coverage and persistence; complex equations and real-paper layout accuracy require representative paper tests. A `null` metric means no measurement was recorded.
-
-For a native Windows window, start the app from PowerShell; a WSL launch opens the Linux build. The development launcher selects the Electron binary for the current system, so both binaries can coexist in one source directory. If Node cannot download Electron on Windows, run `.\scripts\install_electron_windows.ps1` in PowerShell to download and verify the official release. If `npm install` stops at the download, run `npm install --ignore-scripts` before the PowerShell installer. Install Python dependencies separately for each operating system. The native title bar supports Windows Snap and maximize. F11 toggles full screen; Ctrl++ and Ctrl+- adjust interface zoom, and Ctrl+0 restores the 115% default. Window size and zoom are restored on the next launch.
-
 ## Usage
 
 1. Open Settings (top right) → Model: add the models you want and choose "Use for translation" on one card. Models for translation and Ask AI are managed on the same page.
@@ -209,8 +152,6 @@ No frontend build step: `easyread/web/` is plain HTML/CSS/JS, just refresh after
 
 ```bash
 python -m unittest discover tests         # unit tests
-node --test tests/desktop/*.cjs           # desktop tests
-python scripts/i18n_check.py              # translation coverage
 node tests/e2e.cjs library/<paper-id>     # browser end-to-end test (needs Playwright and a translated paper)
 ```
 

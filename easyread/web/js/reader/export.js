@@ -2,6 +2,7 @@
 (function (PR) {
   "use strict";
   const S = PR.state;
+  const exportFilename = () => ((S.paper.meta || {}).short_zh || (S.paper.meta || {}).title_zh || PR.t("论文")).replace(/[\\/:*?"<>|]/g, "") + PR.t("-笔记.md");
   const KINDS = [
     ["paper", PR.t("论文笔记（整篇的感悟）")], ["note", PR.t("我的笔记")], ["highlight", PR.t("我的划线")], ["question", PR.t("我的问题")],
     ["ai", PR.t("AI 的回答和解释（页边）")], ["chat", PR.t("问 AI 的对话记录")], ["quote", PR.t("每条附上原文引用")],
@@ -21,35 +22,26 @@
   PR.openExport = function () {
     const c = counts();
     const saved = PR.ls.get("easyread-export", { paper: true, note: true, highlight: true, question: true, ai: true, chat: false, quote: true });
-    const dlg = PR.$("#readerDlg");
-    dlg.querySelector(".dialog").innerHTML = "<h2>" + PR.t("导出笔记") + "</h2><div class=\"exp-opts\">" +
+    const body = '<div class="exp-opts">' +
       KINDS.map(([k, l]) => '<label><input type="checkbox" data-exp="' + k + '"' + (saved[k] ? " checked" : "") + ">" + l +
         (c[k] != null ? '<span class="n">' + PR.t("{n} 条", { n: c[k] }) + "</span>" : "") + "</label>").join("") +
-      '</div><p class="hint">' + PR.t("导出成 Markdown，按原文章节顺序排，可以直接放进 Obsidian、Notion。") + "</p>" +
-      '<div class="actions"><button class="btn" data-exp-close>' + PR.t("取消") + '</button><button class="btn primary" data-exp-go>' + PR.t("导出") + "</button></div>";
-    dlg.classList.add("open");
+      '</div>';
+    PR.openExportDialog({title:PR.t("导出笔记"), filename:exportFilename(), body, prepare});
   };
 
-  PR.$("#readerDlg").addEventListener("click", async (e) => {
-    const dlg = PR.$("#readerDlg");
-    if (e.target.closest("[data-exp-close]")) return dlg.classList.remove("open");
-    if (!e.target.closest("[data-exp-go]")) return;
-    const pick = {};
-    PR.$$("[data-exp]", dlg).forEach((i) => (pick[i.dataset.exp] = i.checked));
-    PR.ls.set("easyread-export", pick);
-    let chat = [];
-    if (pick.chat) {
-      let data = S.chat || {};
-      if (PR.store.mode === "server") {
-        try { data = await PR.api("/api/p/" + PR.pid + "/chat"); }
-        catch (err) { PR.toast(PR.t("读不到对话记录：{msg}", { msg: PR.esc(err.message) })); return; }
+  async function prepare(dlg) {
+      const pick = {};
+      PR.$$("[data-exp]", dlg).forEach((i) => (pick[i.dataset.exp] = i.checked));
+      PR.ls.set("easyread-export", pick);
+      let chat = [];
+      if (pick.chat) {
+        let data = S.chat || {};
+        if (PR.store.mode === "server") {
+          data = await PR.api("/api/p/" + PR.pid + "/chat");
+        }
+        chat = data.threads ? data.threads.flatMap((t) => t.messages || []) : data.messages || [];
       }
-      chat = data.threads ? data.threads.flatMap((t) => t.messages || []) : data.messages || [];
-    }
-    const text = PR.notesMarkdown(pick, chat);
-    const stem = ((S.paper.meta || {}).short_zh || (S.paper.meta || {}).title_zh || PR.t("论文")).replace(/[\\/:*?"<>|]/g, "");
-    const a = PR.el("a", { href: URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" })), download: stem + PR.t("-笔记.md") });
-    document.body.appendChild(a); a.click(); a.remove();
-    dlg.classList.remove("open");
-  });
+      const text = PR.notesMarkdown(pick, chat);
+      return new Blob([text], {type:"text/markdown;charset=utf-8"});
+  }
 })(window.PR);

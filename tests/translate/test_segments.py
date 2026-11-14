@@ -6,7 +6,9 @@ import unittest
 from unittest import mock
 
 from easyread.app import config
+from easyread.chat import chat
 from easyread.engines import engines
+from easyread.library.paperdata import fill_zh, merge_blocks
 from easyread.translate import prompts, segments, terms, translate
 from tests.translate.test_translate import make_ws
 
@@ -174,6 +176,41 @@ class SkipHeadTest(unittest.TestCase):
         self.assertEqual(refs[0]["id"], "refs")  # 晚并进来的更早那块接过原来的 id，挂在上面的笔记不丢
         self.assertEqual(len(paper["references"]), 4)
 
+    def test_unnumbered_reference_entries_are_all_kept_in_page_order(self):
+        # Author-year bibliographies have no numbers; entries used to collide on an empty id and whole pages vanished.
+        cfg = {"engine": "openai", "batch_pages": 2, "concurrency": 2, "openai": {"vision": False}}
+
+        def run(cfg, prompt, cwd, images=None, cancel=None, meter=None):
+            page = int(prompt.split("这次只处理第 ")[1].split(" ")[0].split(",")[0])
+            refs = [{"id": "", "text": f"Author{page}{c}. Title. 2024."} for c in "ab"]
+            if page == 7:
+                refs.append({"id": "", "text": "Author5a. Title. 2024."})  # sent again by a later batch
+            return json.dumps({"blocks": [{"id": f"p{page}-1", "type": "para", "page": page, "en": "x", "zh": "译文"}],
+                               "references": refs})
+        with mock.patch.object(engines, "run", run):
+            translate.translate_pages(self.ws, cfg, list(range(1, 9)), threading.Event(), lambda *a: None)
+        texts = [r["text"].split(".")[0] for r in self.ws.load("paper")["references"]]
+        self.assertEqual(texts, ["Author1a", "Author1b", "Author3a", "Author3b", "Author5a", "Author5b", "Author7a", "Author7b"])
+
+    def test_reference_key_collision_preserves_entries_and_retry_is_idempotent(self):
+        refs = [{"id": "Smith-2024", "text": "Smith. Paper A."},
+                {"id": "Smith-2024", "text": "Smith. Paper B."}]
+        self.ws.update("paper", lambda p: p.update(references=[{"id": "", "text": refs[0]["text"]}]))
+        for entry in refs:
+            merge_blocks(self.ws, {"references": [entry]})
+        saved = self.ws.load("paper")["references"]
+        self.assertEqual([r["text"] for r in saved], [r["text"] for r in refs])
+        self.assertEqual(len({r["id"] for r in saved}), 2)
+        self.assertEqual([r["cite_key"] for r in saved], ["Smith-2024", "Smith-2024"])
+        merge_blocks(self.ws, {"references": refs})
+        self.assertEqual(self.ws.load("paper")["references"], saved)
+
+    def test_page_seams_inside_one_batch_get_paragraph_instructions(self):
+        instruction = "按原文段落合成一个 para"
+        self.assertIn(instruction, prompts._context(self.ws, [19, 20], skip_head=True))
+        self.assertNotIn(instruction, prompts._context(self.ws, [20]))
+        self.assertNotIn(instruction, prompts._context(self.ws, [19, 20], new_blocks=False))
+
     def test_prev_paragraph_skips_footnote_and_flags_unfinished(self):
         def add(*blocks):
             self.ws.update("paper", lambda p: p["blocks"].extend(blocks))
@@ -207,6 +244,44 @@ class SkipHeadTest(unittest.TestCase):
         self.ws.update("paper", lambda p: p["blocks"].append({"id": "p1-1", "type": "para", "page": 1, "en": "far away"}))
         self.assertNotIn("far away", prompts._context(self.ws, [5, 6]))
         self.assertIn("far away", prompts._context(self.ws, [2, 3]))
+
+    def test_malformed_glossary_entries_are_filtered_and_do_not_break_prompts(self):
+        self.ws.update("paper", lambda p: p.update(
+            blocks=[{"id": "p1-1", "type": "para", "page": 1, "en": "Librium and standard error.", "zh": "利眠宁与标准误差。"}],
+            glossary=[{"en": "Librium", "s": "利眠宁"}, {"en": "only_en"}, "bad"],
+        ))
+        self.assertNotIn("已有术语表", prompts._context(self.ws, [2]))
+        self.assertNotIn("术语表：", chat._context(self.ws, "p1-1", ""))
+        retrans_prompt, _ = prompts.retranslate(self.ws, "p1-1", "")
+        self.assertIn("术语表：\n", retrans_prompt)
+
+        merge_blocks(self.ws, {"glossary": [
+            {"en": "Librium", "s": "利眠宁"},
+            {"en": "some term"},
+            {"en": " ", "zh": "空白"},
+            {"en": "empty_zh", "zh": " "},
+            "not-a-dict",
+            {"en": "Librium", "zh": "利眠宁"},
+            {"en": "standard error", "zh": "标准误差"},
+        ]})
+        self.assertEqual(self.ws.load("paper")["glossary"], [
+            {"en": "Librium", "zh": "利眠宁"},
+            {"en": "standard error", "zh": "标准误差"},
+        ])
+
+        fill_zh(self.ws, {"zh": {"p1-1": "利眠宁与标准误差。"}, "glossary": [
+            {"en": "bad_fill", "s": "坏"},
+            {"en": "bias", "zh": "偏差"},
+        ]}, [1], {"p1-1"})
+        self.assertEqual(self.ws.load("paper")["glossary"], [
+            {"en": "Librium", "zh": "利眠宁"},
+            {"en": "standard error", "zh": "标准误差"},
+            {"en": "bias", "zh": "偏差"},
+        ])
+        self.assertIn("已有术语表（必须沿用）：Librium = 利眠宁；standard error = 标准误差；bias = 偏差", prompts._context(self.ws, [2]))
+        self.assertIn("术语表：Librium = 利眠宁；standard error = 标准误差；bias = 偏差", chat._context(self.ws, "p1-1", ""))
+        retrans_prompt, _ = prompts.retranslate(self.ws, "p1-1", "")
+        self.assertIn("术语表：Librium = 利眠宁；standard error = 标准误差；bias = 偏差", retrans_prompt)
 
 
 class ConfigMigrationTest(unittest.TestCase):

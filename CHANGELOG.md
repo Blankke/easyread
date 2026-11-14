@@ -1,5 +1,46 @@
 # 更新记录
 
+## v1.4.7（2026-11-07）
+
+- **引用论文导航与导入**。从参考文献打开库里的论文，或通过 DOI、arXiv、链接、本地 PDF 导入被引论文。引用树显示库内已识别的引用关系，跨论文跳转后可以逐层返回原来的阅读位置。[PR #131](https://github.com/Edwardxlai/easyread/pull/131) · @wangwu-30
+- **全屏论文笔记**。选中原文可以把摘录插到笔记光标处，点击摘录可回到原文。支持全屏编辑、按 Esc 回到侧栏，以及导出带原文链接的 XMind 导图。[PR #142](https://github.com/Edwardxlai/easyread/pull/142) · @hyskr
+- **保留 PDF 排版与文内链接**。新整理和翻译的正文保留原文粗体、斜体，图、表、章节和公式按论文编号跳转。改善作者年份引用匹配，修复无编号的参考文献在并行翻译时丢失的问题。[PR #144](https://github.com/Edwardxlai/easyread/pull/144) · @ShiratsuYudachi
+- **划线与 Windows 阅读器**。正文和行内公式的荧光笔、下划线对齐。同色同笔型的重叠划线会合并，重新选中可以取消或转换笔型，笔记和回复随标记保留，支持整次撤销。修复拖选文字触发白屏的一条路径；渲染进程退出后可恢复论文标签，反复退出时可返回文献库。[#124](https://github.com/Edwardxlai/easyread/issues/124) · [#126](https://github.com/Edwardxlai/easyread/issues/126)
+- **问 AI 支持文件附件**。选择或拖入 PDF、TXT、Markdown 后，可对照当前论文提问并继续追问。每次最多两个文件，每个上限 8 MiB；PDF 提取文字，长文件使用节选。修复 Codex 已开启联网搜索却无法调用网页工具的问题。[#152](https://github.com/Edwardxlai/easyread/issues/152)
+- **翻译中断后只续译缺页**。重启后跳过已保存的页；手动指定重译时，仅继续所选范围内尚未完成的部分。模型返回缺少原文或译名的术语时会跳过该条，旧论文可以直接重试、重译单段或继续问 AI。[#146](https://github.com/Edwardxlai/easyread/issues/146) · [PR #147](https://github.com/Edwardxlai/easyread/pull/147) · @pratyu2h
+- **跨页段落与局部格式修复**。同一批次内，翻译和原文整理都要求将相邻页的同一自然段归到起始页，续文只输出一次；反馈者的原 PDF 仍待复测。可定位的公式和格式问题只送回相关块修正，PDF 原文定位会复用已匹配的文字。[#140](https://github.com/Edwardxlai/easyread/issues/140)
+- **金额、脚注、表注和代码**。修复美元金额被识别为公式的情况；旧译文中能唯一对应同页脚注的上标可以跳转并返回。末行单元格中的表注移到表格下方。能从原 PDF 核对的 SQL 代码恢复换行。[#136](https://github.com/Edwardxlai/easyread/issues/136) · [#137](https://github.com/Edwardxlai/easyread/issues/137) · [#138](https://github.com/Edwardxlai/easyread/issues/138) · [#139](https://github.com/Edwardxlai/easyread/issues/139)
+- **模型设置与翻译诊断**。Ollama 沿用模型自身的温度设置。兼容 API 的流式响应提前中断时会重试，失败输出按次保留，可按需开启本地诊断。任务记录 PDF 准备、模型调用、校验、定位和保存的耗时。[#132](https://github.com/Edwardxlai/easyread/issues/132) · [#150](https://github.com/Edwardxlai/easyread/issues/150)
+- **主题设置**。保存阅读排版时会保留当前选择的主题，避免深浅色被旧设置改回去。[#148](https://github.com/Edwardxlai/easyread/issues/148)
+
+## v1.4.6（2026-11-01）
+
+- **论文笔记与导图**：可用富文本编辑笔记，切换到 Markdown，或把标题层级展开为导图。修复中文输入法组合输入，支持粘贴、拖入和缩放图片；桌面退出时等待大笔记保存，浏览器存储空间不足时提示导出。每张新增图片上限为 2 MiB。[PR #113](https://github.com/Edwardxlai/easyread/pull/113) · [PR #127](https://github.com/Edwardxlai/easyread/pull/127)
+- **选词翻译与朗读**：在正文选中单词或短语即可查询释义，英文单词可查看英美音标，使用本机语音朗读。[PR #117](https://github.com/Edwardxlai/easyread/pull/117)
+- **译图随阅读模式切换**：在翻译设置里开启“生成译图”后，可为新论文生成译图，也可给旧论文补图。原文、译文和双语模式分别显示对应图片；生成失败时仍能阅读原图和文字译文。替换自动裁图后会清理失去引用的旧截图，保留共享图片和手动裁图。[PR #120](https://github.com/Edwardxlai/easyread/pull/120) · [PR #122](https://github.com/Edwardxlai/easyread/pull/122)
+- **导入时生成中文 PDF**：可选用 BabelDOC 单独生成中文 PDF，沿用 EasyRead 的翻译引擎；可只生成 PDF，或把已有结果另存到指定目录，同名文件不会被覆盖。此选项默认关闭，需另行安装 BabelDOC。[PR #123](https://github.com/Edwardxlai/easyread/pull/123)
+- **问 AI 与 CLI**：标准、简明、精读三种问答都附带已整理的论文正文，上限为 30,000 字符。支持工具的 CLI 可继续读取论文或联网检索；新增 Qoder CN CLI 接入，OpenCode 改用内置 agent，避免依赖自定义 agent 注册。[#118](https://github.com/Edwardxlai/easyread/issues/118) · [#125](https://github.com/Edwardxlai/easyread/issues/125) · [#128](https://github.com/Edwardxlai/easyread/issues/128) · [#129](https://github.com/Edwardxlai/easyread/issues/129)
+- **正文字号与公式标记**：在正文按 Ctrl / ⌘ 并滚动滚轮可调整字号。行内与独立公式的标记按实际行对齐，保留局部选区和下划线；原生滚动条跟随深浅主题。[#116](https://github.com/Edwardxlai/easyread/issues/116) · [#126](https://github.com/Edwardxlai/easyread/issues/126)
+- **Windows 阅读器崩溃修复**：修复搜索或段落跳转后，点击正文或开始拖选文字可能导致阅读器白屏的问题。#124 反馈的划线白屏仍待反馈者复测。[#133](https://github.com/Edwardxlai/easyread/issues/133) · [#124](https://github.com/Edwardxlai/easyread/issues/124)
+
+## v1.4.5（2026-10-26）
+
+- 发版检查：三平台 CI 通过，Python 554 项（1 项跳过）、前端与桌面 227 项；真实 Electron 验证多标签打开、切换、关闭、保存、桌面能力调用和主题同步。修复 OpenCode 无代理环境启动错误，补齐繁体词条；构建结果与真实 CLI 等未验收项见 [1.4.5 整合记录](docs/release-1.4.5-integration.md)
+- **PDF 失败恢复与内存保护**（[#109](https://github.com/Edwardxlai/easyread/issues/109)）：准备失败时显示错误和重试入口；PDF 准备放到独立进程，内存不足时降低清晰度重试，并限制位图大小。临时锁文件写入失败有限重试，持续失败时保留错误和互斥保护；反馈者原 PDF 与同步盘环境仍待复测
+- **图片保持原色与点击缩放**（[#110](https://github.com/Edwardxlai/easyread/issues/110)、[PR #111](https://github.com/Edwardxlai/easyread/pull/111)，@AurvalLab）：PDF、插图和封面不随主题反色，深色界面中的 PDF 保留白纸原色；正文图片可点击放大、缩放和拖动查看，保留拖到笔记的操作
+- **ZCode CLI 实验性接入**（[#112](https://github.com/Edwardxlai/easyread/issues/112)）：使用本机已登录的 ZCode，模型跟随 ZCode 自身设置；接入翻译、问 AI 和图片附件。适配测试不代表真实账号调用已验收
+- **桌面多标签接线**：正式桌面入口启用标签页，外部论文链接在标签内打开；退出、重启和安装更新前保存各标签，明确保存失败时保留窗口。设置选目录、导出和更新继续通过主窗口调用桌面能力
+
+- **多论文标签页**（[#103](https://github.com/Edwardxlai/easyread/issues/103)）：从文献库连续打开多篇论文，在标签页之间切换并保留各自的阅读位置
+- **手动重新截取图片**（[#104](https://github.com/Edwardxlai/easyread/issues/104)）：图片右键选择“重新截取图片”，在原 PDF 上框选范围并替换当前图片；支持恢复自动截图，后台补图不会覆盖手动选择的范围
+- **图内文字翻译开关**（[#104](https://github.com/Edwardxlai/easyread/issues/104)）：设置 → 模型中可关闭“翻译图内文字”，之后翻译时不再生成图内文字原文及译文，图片、正文和题注正常保留；默认开启
+- **AI 回答导出 Markdown**（[#106](https://github.com/Edwardxlai/easyread/issues/106)）：每条 AI 回答下方新增导出入口，按“论文来源 → 我的问题 → AI 回答”排列，保留标题、列表、公式和代码；含本地图片时打包为 ZIP 并使用相对路径，可解压后放入 Obsidian 文献笔记目录。整篇笔记与单条回答共用导出窗口，默认沿用下载目录，也可主动更改保存位置；桌面版显示实际目录，默认导出遇到同名文件时自动加序号
+- **编辑翻译提示词与单次补充要求**（[#89](https://github.com/Edwardxlai/easyread/issues/89)）：设置 → 模型提供“编辑提示词”入口，可修改长期使用的翻译风格和术语规则，也可恢复默认；开始翻译时可填写仅用于本次任务的补充要求，重试时保留。旧版保存的补充要求带入提示词编辑器，供程序解析的输出格式约束单独保留
+- **OpenCode CLI**（[#100](https://github.com/Edwardxlai/easyread/issues/100)）：翻译和问 AI 新增本机 OpenCode CLI 接入，在设置 → 模型 → 添加模型中选择；使用本机 CLI 的模型配置，模型可用性以 OpenCode 及所用服务为准
+- **边读边译保持阅读位置**（[#107](https://github.com/Edwardxlai/easyread/issues/107)）：新译文插入时保留当前正文或 PDF 原页的阅读位置，复用未变化的内容节点并校正重排偏移；用户主动滚动或跳转时停止旧位置校正
+- **恢复 PDF 原页阅读进度**（[PR #105](https://github.com/Edwardxlai/easyread/pull/105)，@AurvalLab）：尚未整理正文的 PDF 按页码和页内位置保存进度，关闭后重开可回到原位置；兼容原页与正文混排，旧版误记为标题但仍有有效进度的记录按全文比例近似恢复
+- **设置拖选文字不再误关闭**（[#108](https://github.com/Edwardxlai/easyread/issues/108)）：从设置输入框内按住鼠标拖到弹窗外再松开，不再被当作点击背景；正常点击弹窗外空白区域仍可关闭设置
+
 ## v1.4.4（2026-10-20）
 
 - **PDF 复制保留空格**：原页文字层保留 PDF 引擎补出的空格和换行，避免复制后单词粘连；选择用的文字缓存独立生成，原文件变化后自动刷新，不改动原有定位缓存

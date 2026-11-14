@@ -18,12 +18,13 @@ from ..pdf import figures, pdfwork
 from ..app import cli_models, config, i18n, open_link, prefs, updates
 from ..engines import detect, engines, usage
 from ..translate import langs
-from ..library import trash
+from ..library import citations, trash
 from . import settings_api, library_api, jobs_api, paper_api, wsock
+from .babeldoc_api import BabelDocJobs
 from ..app.log import log, tail
 from ..bulk import api as bulk_api
 from .jobs import Jobs
-from ..library.library import Library
+from ..library.library import Library, sha256_bytes
 from ..app.i18n import tr
 from ..library.store import now_iso
 from ..library.reader_files import prepare_later as _prepare_later
@@ -44,6 +45,7 @@ class App:
     def __init__(self, cfg: dict):
         self.lib = Library(config.library_dir(cfg))
         self.jobs = Jobs(self.lib)
+        self.babeldoc = BabelDocJobs()
         self.token = os.urandom(12).hex()
         self.location = library_api.LibraryLocation(self)
         self.presence = None  # presence.Presence，serve() 里设
@@ -107,7 +109,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError(tr("文件太大"))
         return self.rfile.read(n) if n else b""
 
-    def _import_result(self, ws, fresh, translate_after, scope, read=False, model="", target=""):
+    def _import_result(self, ws, fresh, translate_after, scope, read=False, model="", target="", translation_extra="", citation=None):
         # A failed first preparation still leaves a library entry. Re-importing
         # that PDF must retry preparation instead of silently skipping it.
         paper = ws.load("paper") or {}
@@ -116,8 +118,14 @@ class Handler(BaseHTTPRequestHandler):
         if queued:
             if translate_after and not read:
                 langs.remember(ws, target)  # 导入框里选的译文语言
-            self.app.jobs.enqueue(ws, translate_after=translate_after, scope=scope, read=read, model=model)
-        return self._json(200, {"id": ws.id, "new": fresh, "queued": queued})
+            self.app.jobs.enqueue(ws, translate_after=translate_after, scope=scope, read=read, model=model, translation_extra=translation_extra)
+        result = {"id": ws.id, "new": fresh, "queued": queued}
+        if citation:
+            try:
+                citations.link_reference(self.app.lib, citation[0], citation[1], citation[2], ws.id)
+            except (ValueError, OSError) as e:
+                result["citation_error"] = str(e)
+        return self._json(200, result)
 
     # ---------- GET ----------
     def do_HEAD(self):
@@ -149,6 +157,10 @@ class Handler(BaseHTTPRequestHandler):
         app, lib = self.app, self.app.lib
         if path in ("/", "/index.html"):
             return self._page(WEB / "library.html")
+        if path in ("/babeldoc", "/web/babeldoc.html"):
+            return self._redirect("/")
+        if path == "/web/tabs.html":
+            return self._page(WEB / "tabs.html")
         if path.startswith("/read/"):
             return self._page(WEB / "reader.html")
         if path == "/open":  # 外部工具打开指定论文/段落；桌面版的 easyread://open 也转到这里
@@ -194,6 +206,13 @@ class Handler(BaseHTTPRequestHandler):
             if not ws:
                 return self._json(404, {"error": tr("没有这篇论文")})
             action = parts[4]
+            if action == "babeldoc":
+                if len(parts) == 5:
+                    return self._json(200, app.babeldoc.status(ws))
+                if len(parts) == 7:
+                    return self._file(app.babeldoc.file(ws, parts[5], parts[6]), ctype="application/pdf")
+            if action == "citations":
+                return self._json(200, citations.graph_for(lib, ws.id))
             if action == "state":
                 opened = {"last_opened": now_iso()}
                 if (ws.load("item") or {}).get("status", "unread") == "unread":  # 打开过就算在读
@@ -203,9 +222,10 @@ class Handler(BaseHTTPRequestHandler):
                 # Take versions before reading content: concurrent preparation
                 # can then trigger a later poll, never tag old data as current.
                 versions = ws.versions()
+                cfg = config.load()
                 state = {**{n: ws.load(n) for n in ("paper", "discussion", "reader", "layout", "item", "job")},
                          "versions": versions, "token": app.token, "id": ws.id, "library_status": app.location.status,
-                         "engine": config.load().get("engine")}
+                         "engine": cfg.get("engine"), "figure_images_enabled": (cfg.get("figure_images") or {}).get("enabled") is True}
                 self._json(200, state)
                 # Existing layout is usable immediately. Upgrade only after the
                 # response has been sent; polling picks up the new layout/crops.
@@ -218,7 +238,8 @@ class Handler(BaseHTTPRequestHandler):
                         log.exception("启动阅读页准备失败 %s", ws.root)
                 return
             if action == "versions":
-                return self._json(200, {**ws.versions(), "library_status": app.location.status})
+                return self._json(200, {**ws.versions(), "library_status": app.location.status,
+                                        "figure_images_enabled": (config.load().get("figure_images") or {}).get("enabled") is True})
             if action == "chat":
                 return self._json(200, {"threads": chat_store.threads(ws), **chat_models.listing(config.load()), "limits": usage.latest()})
             if action == "log":
@@ -310,15 +331,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True})
         if path == "/api/import":  # 请求体就是 PDF 文件
             data = self._body()
+            if q.get("babeldoc") == "1" and sha256_bytes(data)[:12] in app.babeldoc.running:
+                raise ValueError("这篇文献正在生成 PDF，不能重复上传")
             ws, fresh = lib.create_from_pdf(data, q.get("name", "paper.pdf"))
             return self._import_result(ws, fresh, q.get("translate", "1") == "1", q.get("scope"),
-                                       read=q.get("read") == "1", model=q.get("model", ""), target=q.get("target", ""))
+                                       read=q.get("read") == "1", model=q.get("model", ""), target=q.get("target", ""), translation_extra=q.get("translation_extra", ""))
         if path in ("/api/import-url", "/api/import-arxiv"):
             body = json.loads(self._body() or b"{}")
             data, name, meta = lib.fetch(body.get("ref", ""))  # sources.SourceError 是 ValueError，回 400
             ws, fresh = lib.create_from_pdf(data, name, meta)
             return self._import_result(ws, fresh, bool(body.get("translate", True)), body.get("scope"),
-                                       read=bool(body.get("read")), model=str(body.get("model") or ""), target=str(body.get("target") or ""))
+                                       read=bool(body.get("read")), model=str(body.get("model") or ""), target=str(body.get("target") or ""), translation_extra=body.get("translation_extra", ""))
         if path in settings_api.POST:  # 设置页：保存配置、模型名单、试一下、取模型列表
             return self._json(200, settings_api.POST[path](json.loads(self._body() or b"{}")))
         if path == "/api/prefs":
@@ -337,7 +360,22 @@ class Handler(BaseHTTPRequestHandler):
             ws = lib.ws(parts[3]) if len(parts) > 4 else None
             if not ws:
                 return self._json(404, {"error": tr("没有这篇论文")})
+            if parts[4] in ("citation-import", "citation-import-pdf"):
+                if parts[4] == "citation-import":
+                    body = json.loads(self._body() or b"{}")
+                    data, name, meta = lib.fetch(body.get("ref", ""))
+                    ref_id, fingerprint = str(body.get("ref_id", "")), str(body.get("fingerprint", ""))
+                else:
+                    data, name, meta = self._body(), q.get("name", "paper.pdf"), None
+                    ref_id, fingerprint = q.get("ref_id", ""), q.get("fingerprint", "")
+                imported, fresh = lib.create_from_pdf(data, name, meta)
+                return self._import_result(imported, fresh, False, None, citation=(ws, ref_id, fingerprint))
             body = json.loads(self._body() or b"{}")
+            if parts[4] == "babeldoc" and len(parts) == 5:
+                return self._json(200, app.babeldoc.start(ws, model=str(body.get("model") or ""),
+                                  output_dir=str(body.get("output_dir") or ""), regenerate=bool(body.get("regenerate"))))
+            if parts[4] == "babeldoc" and len(parts) == 6 and parts[5] == "delete":
+                return self._json(200, app.babeldoc.delete(ws))
             if parts[4] == "chat" and len(parts) == 5:
                 return self._chat(ws, body)
             if parts[4] == "notehelp":

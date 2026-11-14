@@ -14,6 +14,11 @@
     return p;
   };
   PR.prefs = Object.assign({}, DEF, PR.migratePrefs(PR.ls.get("easyread-prefs", {})));
+  PR.persistReaderPrefs = function () {
+    const p = PR.prefs;
+    PR.ls.set("easyread-prefs", Object.assign(PR.migratePrefs(PR.ls.get("easyread-prefs", {})), p));
+    if (PR.store.mode === "server") PR.savePrefs("reader", p);
+  };
   PR.applyPrefs = function () {
     const p = PR.prefs, root = document.documentElement;
     root.style.setProperty("--fs", p.fs + "px");
@@ -24,8 +29,7 @@
     body.classList.toggle("mode-bi", p.mode === "bi");
     body.classList.toggle("no-margin", !p.margin);
     if (PR.applyReadingLanguage) PR.applyReadingLanguage();
-    PR.ls.set("easyread-prefs", Object.assign(PR.migratePrefs(PR.ls.get("easyread-prefs", {})), p));
-    if (PR.store.mode === "server") PR.savePrefs("reader", p);
+    PR.persistReaderPrefs();
   };
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => PR.applyPrefs());
   const relayout = PR.debounce(() => { PR.fitWide(); PR.renderMargin(); PR.syncPage && PR.syncPage(true); }, 60);
@@ -138,6 +142,9 @@
   PR.renderJobState = function () {
     const j = S.job || {};
     const el = PR.$("#jobState");
+    if (j.type === "figure-images" && ["error", "partial"].includes(j.state)) {
+      el.innerHTML = '<span class="err" title="' + PR.esc(j.error || "") + '">' + PR.esc(j.message || "") + '</span>'; return;
+    }
     if (j.state === "confirm") { el.textContent = PR.t("等你确认"); return; }
     if (["queued", "running"].includes(j.state)) el.innerHTML = '<span class="spin"></span> ' + PR.esc(j.message || PR.t("翻译中")) + (j.total ? " " + j.done + "/" + j.total : "");
     else if (j.state === "error") el.innerHTML = '<span class="err" title="' + PR.esc(j.error || "") + '">' + (j.read ? PR.t("整理原文出错") : PR.t("翻译出错")) + "</span>";
@@ -149,18 +156,21 @@
   let tab = "toc";
   PR.toggleDrawer = function (force, which) {
     if (which) tab = which;
+    PR.$('[data-tab="citations"]').hidden = PR.store.mode !== "server";
+    PR.$('[data-tab="recent"]').hidden = PR.store.mode !== "server";
     const open = force != null ? force : !body.classList.contains("drawer-open");
     body.classList.toggle("drawer-open", open);
-    if (open) PR.renderDrawer();
+    if (open) PR.renderDrawer(true);
   };
   PR.$("#scrim").onclick = () => PR.toggleDrawer(false);
   if (PR.store.mode !== "server") PR.$('[data-tab="recent"]').hidden = true;  // 离线单文件版没有文献库
-  PR.$(".drawer-tabs").addEventListener("click", (e) => { const b = e.target.closest("[data-tab]"); if (b) { tab = b.dataset.tab; PR.renderDrawer(); } });
+  PR.$(".drawer-tabs").addEventListener("click", (e) => { const b = e.target.closest("[data-tab]"); if (b) { tab = b.dataset.tab; PR.renderDrawer(true); } });
 
-  PR.renderDrawer = function () {
+  PR.renderDrawer = function (reopened = false) {
     PR.$$(".drawer-tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
     const box = PR.$(".drawer-body");
-    box.innerHTML = ({ toc: tocHtml, terms: termsHtml, about: aboutHtml, recent: recentHtml })[tab]();
+    if (tab === "citations") PR.citationsDrawer(box, reopened);
+    else box.innerHTML = ({ toc: tocHtml, terms: termsHtml, about: aboutHtml, recent: recentHtml })[tab]();
     box.className = "drawer-body " + tab;
   };
   /* 最近读过的论文：不用回文献库就能换一篇 */
@@ -252,9 +262,15 @@
   };
 
   /* ---------- 悬浮卡 ---------- */
-  let popHideT = null, popSticky = false;
+  let popHideT = null, popSticky = false, popCleanup = null;
+  function releasePopover() {
+    const cleanup = popCleanup; popCleanup = null;
+    if (cleanup) cleanup();
+  }
   PR.popover = function (anchor, html, opts) {
     if (!html) return;
+    releasePopover();
+    popCleanup = opts && opts.onClose;
     clearTimeout(popHideT);
     const pop = PR.$("#popover");
     pop.onclick = null;
@@ -269,6 +285,7 @@
     pop.style.left = x + "px"; pop.style.top = Math.max(58, y) + "px";
   };
   PR.hidePopover = () => {
+    releasePopover();
     clearTimeout(popHideT);
     const pop = PR.$("#popover"); pop.classList.remove("open");
     if (pop.querySelector(".media-hover")) pop.replaceChildren();

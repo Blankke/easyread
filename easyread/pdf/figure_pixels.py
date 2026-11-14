@@ -9,6 +9,8 @@ import math
 from contextlib import closing
 from pathlib import Path
 
+from .render_limits import render_page
+
 SCALE = 2
 _WHITE = 245  # 三个通道都不低于这个值就算页面底色
 
@@ -20,7 +22,7 @@ def visible_mask(pdf: Path, page_index: int, erase: list[list[float]]):
     from PIL import ImageChops, ImageDraw, ImageFilter
 
     from .pdfwork import open_pdf
-    with open_pdf(pdf) as doc, closing(doc[page_index]) as page, closing(page.render(scale=SCALE)) as bitmap:
+    with open_pdf(pdf) as doc, closing(doc[page_index]) as page, closing(render_page(page, SCALE)) as bitmap:
         with bitmap.to_pil() as raw, raw.convert("RGB") as rgb:
             r, g, b = rgb.split()
     darkest = ImageChops.darker(ImageChops.darker(r, g), b)

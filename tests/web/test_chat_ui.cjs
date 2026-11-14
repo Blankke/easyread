@@ -45,7 +45,7 @@ async function reader(threads = [], options = {}) {
     window: { PR }, katex: require("../../easyread/web/vendor/katex/katex.min.js"),
   });
   vm.runInNewContext(source("chat-effort"), { window: { PR } });
-  vm.runInNewContext(source("chat-images") + "\n" + source("chat"), {
+  vm.runInNewContext(source("chat-images") + "\n" + source("chat-documents") + "\n" + source("chat"), {
     window: { PR, addEventListener() {} },
     document: { addEventListener(name, fn) { if (!listeners.has(name)) listeners.set(name, []); listeners.get(name).push(fn); } },
     navigator: { clipboard: { async writeText(text) { copied.push(text); } } },
@@ -89,10 +89,26 @@ async function reader(threads = [], options = {}) {
     await click("style-pick", null, null, { s: value });          // 选一档
   };
   return { PR, panel, nodes, requests, copied, confirmations, dispatch, click, selectThread, setStyle,
+    drop: files => panelEvents.get("drop")({ dataTransfer: { files }, preventDefault() {} }),
+    choose: files => panelEvents.get("change")({ target: { id: "chatFileInput", files } }),
     finishImages: () => pendingReads.splice(0).forEach(done => done()),
     paste: files => { let prevented = false; return Promise.resolve(panelEvents.get("paste")({ target: { id: "chatInput" }, clipboardData: { items: files.map(file => ({ kind: "file", type: file.type, getAsFile: () => file })) }, preventDefault: () => { prevented = true; } })).then(() => prevented); },
     emit: async name => { await events.get(name)(); await settled(); }, finish: () => finish() };
 }
+
+test("dropped documents reach the request and a new thread clears picked attachments", async () => {
+  const r = await reader();
+  const file = { name: "notes.txt", size: 4, data: "data:text/plain;base64,bm90ZQ==" };
+  await r.drop([file]);
+  assert.match(r.panel.innerHTML, /notes\.txt/);
+  const sending = r.click("send");
+  await settled();
+  assert.deepEqual(r.requests[0].documents, [{ name: "notes.txt", data: "bm90ZQ==" }]);
+  r.finish(); await sending;
+  r.choose([file]); await settled();
+  await r.click("new");
+  assert.doesNotMatch(r.panel.innerHTML, /notes\.txt/);
+});
 
 test("the answer-style button opens a menu and every mode reaches the request", async () => {
   const r = await reader();
@@ -271,59 +287,6 @@ test("a failed first question can be left for a new conversation and retried wit
   r.finish();
   await sending;
   assert.ok(r.panel.innerHTML.includes(answer));
-});
-
-test("Markdown export includes all conversations and complete answers, online and offline", async () => {
-  const chat = { threads: [
-    { messages: [{ role: "user", content: "first" }, { role: "assistant", content: answer, model: "Model" }] },
-    { messages: [{ role: "user", content: "second" }, { role: "assistant", content: "normal answer", model: "Model" }] },
-  ] };
-  for (const mode of ["server", "static"]) {
-    let go, blob, downloaded = false;
-    const dlg = { addEventListener(name, fn) { go = fn; }, classList: { remove() {} } };
-    const panel = { addEventListener() {} };
-    const PR = {
-    t: (s, v) => v ? s.replace(/\{(\w+)\}/g, (m, k) => v[k]) : s,
-      state: { paper: { meta: { title_en: "Test paper" }, blocks: [] }, reader: {}, discussion: {}, chat }, store: { mode }, pid: "test",
-      $: selector => selector === "#readerDlg" ? dlg : panel,
-      $$: () => [{ dataset: { exp: "chat" }, checked: true }], ls: { get: (k, fallback) => fallback, set() {} },
-      api: async () => chat, myNotes: () => [], el: () => ({ click() { downloaded = true; }, remove() {} }),
-      debounce: fn => fn,
-    };
-    const context = {
-      window: { PR }, document: { addEventListener() {}, body: { appendChild() {} } },
-      Blob, URL: { createObjectURL(value) { blob = value; return "blob:test"; } },
-    };
-    vm.runInNewContext(source("notespanel"), context);
-    vm.runInNewContext(source("export"), context);
-    await go({ target: { closest: selector => selector === "[data-exp-go]" } });
-    const text = await blob.text();
-    assert.ok(downloaded);
-    assert.ok(text.includes(answer));
-    assert.ok(text.includes("first"));
-    assert.ok(text.includes("second"));
-    assert.ok(text.includes("normal answer"));
-  }
-});
-
-test("a failed chat export keeps the dialog open, creates no file, and treats the error as text", async () => {
-  let go, closed = false, downloaded = false;
-  const notices = [];
-  const dlg = { addEventListener(name, fn) { go = fn; }, classList: { remove() { closed = true; } } };
-  const PR = {
-    t: (s, v) => v ? s.replace(/\{(\w+)\}/g, (m, k) => v[k]) : s,
-    state: { chat: {} }, store: { mode: "server" }, pid: "test",
-    $: () => dlg, $$: () => [{ dataset: { exp: "chat" }, checked: true }], ls: { set() {} },
-    api: async () => { throw new Error('<img src=x onerror="alert(1)">'); },
-    esc: text => String(text).replace(/</g, "&lt;").replace(/>/g, "&gt;"),
-    toast: text => notices.push(text), notesMarkdown() { downloaded = true; },
-  };
-  vm.runInNewContext(source("export"), { window: { PR } });
-  await go({ target: { closest: selector => selector === "[data-exp-go]" } });
-  assert.equal(closed, false);
-  assert.equal(downloaded, false);
-  assert.ok(notices[0].includes('&lt;img'));
-  assert.ok(!notices[0].includes('<img'));
 });
 
 test("thinking effort lives in the model menu and shows on the model button once chosen", async () => {

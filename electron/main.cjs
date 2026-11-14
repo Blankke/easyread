@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, Menu, shell, ipcMain } = require("electron");
+const { app, BrowserWindow, crashReporter, dialog, Menu, shell, ipcMain } = require("electron");
 const { execFileSync, spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -9,7 +9,9 @@ const { URL } = require("url");
 const http = require("http");
 const startup = require("./startup-feedback.cjs");
 const { registerUpdates } = require("./desktop-updates.cjs");
+const { registerExports } = require("./desktop-exports.cjs");
 const deepLink = require("./deep-link.cjs");
+const desktopTabs = require("./desktop-tabs.cjs");
 const dataDir = require("./data-dir.cjs");
 const { randomBytes } = require("crypto");
 const { WebContentsView } = require("electron");
@@ -251,18 +253,19 @@ async function stopBackendGracefully() {
 /* 退出前先让页面把没落盘的东西写回去再停后端；页面没应就照常退出 */
 function savePageState() {
   const wc = mainWindow && mainWindow.webContents;
-  if (!wc || wc.isDestroyed()) return Promise.resolve();
-  return new Promise(resolve => {
+  if (!wc || wc.isDestroyed() || wc.isCrashed?.()) return Promise.resolve();
+  return new Promise((resolve, reject) => {
     let timer;
-    function done() {
+    function done(error) {
       clearTimeout(timer);
       ipcMain.removeListener("easyread:page-saved", saved);
-      resolve();
+      if (error) reject(error); else resolve();
     }
-    function saved(event) {
-      if (event.sender === wc && event.senderFrame === wc.mainFrame) done();
+    function saved(event, result) {
+      if (event.sender === wc && event.senderFrame === wc.mainFrame) done(result?.ok === false ? new Error(result.error || "Could not save open papers") : null);
     }
-    timer = setTimeout(done, 1200);
+    const tabbed = (wc.getURL?.() || "").includes("/web/tabs.html");
+    timer = setTimeout(() => done(tabbed ? new Error("Saving open papers timed out. Please retry.") : null), tabbed ? 8000 : 1200);
     ipcMain.on("easyread:page-saved", saved);
     wc.send("easyread:before-quit");
   });
@@ -282,6 +285,7 @@ ipcMain.handle("easyread:pick-folder", async event => {
 });
 ipcMain.handle("easyread:relaunch", async event => {
   trustedWindow(event);
+  await savePageState();
   await stopBackendGracefully();
   app.relaunch();
   app.exit(0);
@@ -319,7 +323,9 @@ function openLink(target) {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
-  mainWindow.loadURL(new URL(target, backendUrl).href);
+  desktopTabs.openPaper(mainWindow, target).then(opened => {
+    if (!opened && mainWindow) return mainWindow.loadURL(desktopTabs.shellUrl(backendUrl, target));
+  }).catch(error => dialog.showErrorBox("EasyRead", error.message));
 }
 
 async function createWindow() {
@@ -345,6 +351,35 @@ async function createWindow() {
     if (/^https?:/i.test(target)) shell.openExternal(target);
     return { action: "deny" };
   });
+  desktopTabs.bindShortcuts(mainWindow);
+  const window = mainWindow, wc = window.webContents;
+  let lastCrash = 0, readerUrl;
+  function rememberShell(raw) {
+    const url = new URL(raw);
+    if (url.origin === backendUrl && url.pathname === "/web/tabs.html") readerUrl = raw;
+  }
+  wc.on("did-navigate", (_event, url) => rememberShell(url));
+  wc.on("did-navigate-in-page", (_event, url, mainFrame) => { if (mainFrame) rememberShell(url); });
+  wc.on("render-process-gone", async (_event, details) => {
+    if (quitting || window !== mainWindow || details.reason === "clean-exit" || !backendUrl) return;
+    startup.mark(app, `renderer-gone reason=${details.reason} exitCode=${details.exitCode}`);
+    const repeated = Date.now() - lastCrash < 15000;
+    lastCrash = Date.now();
+    let target = readerUrl || desktopTabs.shellUrl(backendUrl);
+    try {
+      if (repeated) {
+        const { response } = await dialog.showMessageBox(window, {
+          type: "warning", message: isZh() ? "阅读窗口再次退出" : "The reader stopped again",
+          buttons: isZh() ? ["回到文献库", "重新打开标签页"] : ["Open library", "Restore tabs"],
+          defaultId: 0, cancelId: 0,
+        });
+        if (response === 0) target = desktopTabs.shellUrl(backendUrl);
+      }
+      if (!quitting && window === mainWindow) await window.loadURL(target);
+    } catch (error) {
+      if (!quitting && window === mainWindow) dialog.showErrorBox("EasyRead", error.message);
+    }
+  });
   // A native context menu is separate from the application Edit menu.
   // Electron does not emit this event when the page prevents contextmenu,
   // so the library's and reader's custom menus keep working.
@@ -364,10 +399,14 @@ async function createWindow() {
     if (state.maximized) openingWindow.maximize();
     openingWindow.show();
   });
+  let savedForClose = false;
   mainWindow.on("close", event => {
-    if (process.platform !== "darwin" && !quitting && backend) {
+    if (!quitting && !savedForClose && backend) {
       event.preventDefault();
-      app.quit();  // before-quit saves while the renderer is still alive.
+      if (process.platform === "darwin") {
+        savePageState().then(() => { savedForClose = true; openingWindow.close(); })
+          .catch(error => dialog.showErrorBox("EasyRead", error.message));
+      } else app.quit();
     }
   });
   mainWindow.on("closed", () => {
@@ -384,7 +423,7 @@ async function createWindow() {
     startup.mark(app, "startup-window-visible");
     const url = await startBackend();
     if (mainWindow !== openingWindow || quitting) return;
-    const first = pendingOpen ? new URL(pendingOpen, url).href : url;
+    const first = desktopTabs.shellUrl(url, pendingOpen);
     pendingOpen = undefined;
     await openingWindow.loadURL(first);
     startChatGPTWeb();
@@ -408,6 +447,7 @@ async function createWindow() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  if (process.platform === "win32") crashReporter.start({ uploadToServer: false });
   Menu.setApplicationMenu(process.platform === "darwin"
     ? Menu.buildFromTemplate([{ role: "appMenu" }, { role: "editMenu" }, { role: "windowMenu" }])
     : null);
@@ -417,15 +457,16 @@ if (!app.requestSingleInstanceLock()) {
     openLink(deepLink.openPath(link));
   });
   app.whenReady().then(() => {
+    registerExports({ app, ipcMain, dialog, getWindow: () => mainWindow, trustedWindow });
     deepLink.register(app, process);
     registerUpdates({
       app, ipcMain, updater: require("electron-updater").autoUpdater, trustedWindow,
       getWindow: () => mainWindow,
-      prepareInstall: stopBackendGracefully,
+      prepareInstall: async () => { await savePageState(); await stopBackendGracefully(); },
       recover: async () => {
         if (backend) return;  // 后端没停（正在翻译、拒绝关闭）：页面别刷新，弹窗留着显示原因
         const url = await startBackend();
-        if (mainWindow) await mainWindow.loadURL(url);
+        if (mainWindow) await mainWindow.loadURL(desktopTabs.shellUrl(url));
       },
     });
     return createWindow();
@@ -437,7 +478,8 @@ if (!app.requestSingleInstanceLock()) {
     clearTimeout(webHeartbeatTimer);
     if (!backend) return;
     event.preventDefault();
-    savePageState().then(stopBackendGracefully).catch(stopBackend).finally(() => app.quit());
+    savePageState().then(() => stopBackendGracefully().catch(stopBackend)).then(() => app.quit())
+      .catch(error => { quitting = false; dialog.showErrorBox("EasyRead", error.message); });
   });
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();

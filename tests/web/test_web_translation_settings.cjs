@@ -6,18 +6,19 @@ const { test } = require('node:test');
 
 test('文件模式数值与开关按类型保存，切换模型保留网页选项', async () => {
   let inputs = [];
-  const PR = { t: x => x, esc: String, icon: () => '', settingsTabs: {},
+  const PR = { t: x => x, esc: String, icon: () => '', isCli: () => false, settingsTabs: {},
     $: () => ({ addEventListener() {} }), $$: () => inputs,
     opt: (items, current) => items.map(([key, label]) => `<option value="${key}"${key === current ? ' selected' : ''}>${label}</option>`).join(''),
     settingsRender() {}, saveModelSettings() {}, menu: (_el, items) => { PR.menuItems = items; } };
   const rotations = [];
   const desktop = { chatgptRotate: async key => rotations.push(key), chatgptStatus: async () => ({ ready: true }) };
-  const context = { window: { PR, easyreadDesktop: desktop, addEventListener() {} }, document: { addEventListener() {} } };
-  for (const name of ['settings.js', 'settings-chat.js'])
+  const context = { URLSearchParams, location: { search: '', href: '' },
+    window: { PR, easyreadDesktop: desktop, addEventListener() {} }, document: { addEventListener() {} } };
+  for (const name of ['settings.js', 'settings-translation.js', 'settings-chat.js'])
     vm.runInNewContext(fs.readFileSync(`easyread/web/js/common/${name}`, 'utf8'), context);
   PR.saveModelSettings = () => {};
   PR.settingsRender = () => {};
-  const state = { pinned: true, transChecked: true, cfg: { engine: 'chatgpt_web', chatgpt_web: {
+  const state = { pinned: true, transChecked: true, presets: [], cfg: { engine: 'chatgpt_web', openai: {}, chatgpt_web: {
     model: 'Old', output_mode: 'file', file_batch_pages: 8, project_sync: true, rotate_enabled: false } },
     chat: { models: [{ id: 'new', engine: 'chatgpt_web', model: 'New', name: 'New' }] } };
   const html = PR.settingsTabs.chat.render(state);

@@ -27,13 +27,14 @@
     return pos;
   }
 
-  function findQuote(text, q, prefix, suffix) {
+  function findQuote(text, q, prefix, suffix, start) {
     if (!q) return -1;
     let best = -1, bestScore = -1;
     for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + 1)) {
       let score = 0;
       if (prefix && text.slice(Math.max(0, i - prefix.length), i).endsWith(prefix.slice(-8))) score += 2;
       if (suffix && text.slice(i + q.length, i + q.length + suffix.length).startsWith(suffix.slice(0, 8))) score += 2;
+      if (i === start) score++;
       if (score > bestScore) { best = i; bestScore = score; }
     }
     return best;
@@ -70,13 +71,13 @@
   function locate(n) {
     const math = document.getElementById("b-" + n.anchor)?.querySelector(".math-body");
     if (math) {
-      const i = findQuote(fullText(math), n.quote, n.prefix, n.suffix);
+      const i = findQuote(fullText(math), n.quote, n.prefix, n.suffix, n.start);
       return i >= 0 ? { el: math, i } : null;
     }
     const zh = zhFor(n);
     const first = PR.noteEl(zh, n.side), second = PR.noteEl(zh, n.side === "en" ? "zh" : "en");
     for (const el of [first, second]) {
-      const i = el ? findQuote(fullText(el), n.quote, n.prefix, n.suffix) : -1;
+      const i = el ? findQuote(fullText(el), n.quote, n.prefix, n.suffix, n.start) : -1;
       if (i >= 0) return { el, i };
     }
     return null;
@@ -95,7 +96,7 @@
     if (!onlyBlock) lost.clear();
     const items = [];
     for (const n of PR.myNotes()) {
-      if (!n.quote) continue;
+      if (!n.quote || n.unmarked) continue;
       const attrs = { class: "hl c-" + (n.color || "yellow") + (n.style === "underline" ? " s-ul" : "") + (n.kind === "question" ? " q" : ""), "data-note": n.id };
       for (const p of spans(n)) items.push({ id: n.id, p, attrs });
     }
@@ -110,6 +111,7 @@
     }
     seen.forEach((id) => (miss.has(id) ? lost.add(id) : lost.delete(id)));
     PR.applyMirrors && PR.applyMirrors(scope);
+    PR.renderMathMarks && PR.renderMathMarks(scope);
   };
 
   /* ---------- 选中文字 -> 浮动条 ---------- */
@@ -126,7 +128,29 @@
     const e = el.contains(range.endContainer) ? offsetOf(el, range.endContainer, range.endOffset) : text.length;
     const quote = text.slice(s, e);
     if (!quote.trim()) return null;
-    const out = { anchor: blk.dataset.id, key: math ? blk.dataset.id : zh.dataset.key, quote, prefix: text.slice(Math.max(0, s - 32), s), suffix: text.slice(e, e + 32) };
+    const out = { anchor: blk.dataset.id, key: math ? blk.dataset.id : zh.dataset.key, start: s, quote, prefix: text.slice(Math.max(0, s - 32), s), suffix: text.slice(e, e + 32) };
+    const quoteRange = range.cloneRange();
+    const startMath = (range.startContainer.parentElement || range.startContainer).closest?.('.katex');
+    const endMath = (range.endContainer.parentElement || range.endContainer).closest?.('.katex');
+    if (startMath && el.contains(startMath)) quoteRange.setStartBefore(startMath);
+    if (endMath && el.contains(endMath)) quoteRange.setEndAfter(endMath);
+    if (!el.contains(quoteRange.startContainer)) quoteRange.setStart(el, 0);
+    if (!el.contains(quoteRange.endContainer)) quoteRange.setEnd(el, el.childNodes.length);
+    const content = [];
+    function collect(node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (node.textContent) content.push({ type: 'text', text: node.textContent });
+        return;
+      }
+      if (node.matches?.('.katex')) {
+        const latex = node.querySelector('annotation[encoding="application/x-tex"]')?.textContent;
+        if (latex) { content.push({ type: 'inlineMath', attrs: { latex } }); return; }
+      }
+      if (node.matches?.(SKIP)) return;
+      node.childNodes.forEach(collect);
+    }
+    collect(quoteRange.cloneContents());
+    out.quoteContent = content;
     if (math) out.math = true;
     if (PR.isEnEl(el)) out.side = "en";
     return out;
@@ -181,50 +205,80 @@
       '<span class="dots pen-' + pen + '">' + PR.HL_COLORS.map(([c, name], i) =>
       '<button data-s="highlight" data-color="' + c + '" class="dot-' + c + '" title="' + (pen === "underline" ? PR.t("{color}色下划线", { color: name }) : PR.t("{color}色荧光笔", { color: name })) + (PR.keysOn ? PR.t("（{k}）", { k: i + 1 }) : "") + '"></button>').join("") + "</span>" +
       '<button data-s="note" title="' + PR.t("写笔记（N）") + '">' + PR.icon("note", "sm") + PR.t("笔记") + "</button>" +
+      '<button data-s="paper-note" title="' + PR.t("引用到论文笔记") + '">' + PR.icon("note", "sm") + PR.t("论文笔记") + "</button>" +
       '<button data-s="question" title="' + PR.t("提问（Q）") + '">' + PR.icon("question", "sm") + PR.t("提问") + "</button>" +
+      (PR.store.mode === "server" ? '<button data-s="translate" title="' + PR.t("翻译选中文字，学习词义和用法") + '">' + PR.icon("en", "sm") + PR.t("翻译") + "</button>" : "") +
       (PR.canChat && PR.canChat() && PR.feature("chat") ? '<button data-s="chat" title="' + PR.t("把这句引用到问 AI（可以引用多段）") + '">' + PR.icon("sparkle", "sm") + (PR.chatOpen && PR.chatOpen() ? PR.t("引用到对话") : PR.t("问 AI")) + "</button>" : "") +
       (pendingSel.side || pendingSel.parts || pendingSel.math ? "" : '<button data-s="en" title="' + PR.t("看这段英文") + '">' + PR.icon("en", "sm") + PR.t("原文") + "</button>") +
       '<button data-s="copy" title="' + PR.t("复制") + '">' + PR.icon("copy", "sm") + "</button>";
     bar.classList.add("open");
     const r = pendingSel.rect, w = bar.offsetWidth;
     const x = Math.min(innerWidth - w - 8, Math.max(8, r.left + r.width / 2 - w / 2));
-    const y = r.top - 48 < 58 ? r.bottom + 8 : r.top - 48;
+    const above = r.top - bar.offsetHeight - 8;
+    const y = above < 58 ? r.bottom + 8 : above;
     bar.style.left = x + "px"; bar.style.top = y + "px";
   }
   document.addEventListener("mouseup", (e) => { if (!(e.target.closest && e.target.closest("#selbar, #blockbar"))) setTimeout(showSelbar, 10); });
   document.addEventListener("keyup", (e) => { if (e.shiftKey && e.key.startsWith("Arrow")) showSelbar(); });
   document.addEventListener("selectionchange", PR.debounce(() => { const s = getSelection(); if (!s || s.isCollapsed) selbar().classList.remove("open"); }, 120));
 
-  PR.selectionAction = function (kind, color) {
+  function resolveHighlight(part) {
+    const at = locate(part);
+    return at && { part, el: at.el, text: fullText(at.el), start: at.i, end: at.i + part.quote.length };
+  }
+
+  function paintHighlight(note, intent) {
+    const result = PR.toggleHighlight(note, resolveHighlight, intent);
+    void PR.flush();
+    PR.toast(result.erased ? PR.t("已取消划线") : PR.t("已划线　点划线可以写笔记或改颜色"), { label: PR.t("撤销"), fn: () => PR.undoAnnotation(result.id) }, 2600);
+  }
+
+  function rememberPen(pen, color) {
+    if (PR.prefs.pen === pen && PR.prefs.penColors?.[pen] === color) return;
+    PR.prefs.pen = pen;
+    PR.prefs.penColors = { ...PR.prefs.penColors, [pen]: color };
+    PR.persistReaderPrefs();
+  }
+
+  PR.selectionAction = function (kind, color, selectedPen) {
     if (!pendingSel) return;
-    const { anchor, key, quote, prefix, suffix, side, parts } = pendingSel;
-    selbar().classList.remove("open");
-    getSelection().removeAllRanges();
+    const { anchor, key, start, quote, prefix, suffix, side, parts, rect, quoteContent } = pendingSel;
     pendingSel = null;
+    if (kind !== "highlight") {
+      selbar().classList.remove("open");
+      getSelection().removeAllRanges();
+    }
+    if (kind === "paper-note") { PR.openPaperNote(); PR.paperNoteEditor.insertSources(parts || [{ anchor, quote, quoteContent }]); return; }
+    if (kind === "translate") { PR.translateSelection({ anchor, quote, rect }); return; }
     if (kind === "en") { PR.toggleEn(anchor, true); return; }
     if (kind === "copy") { navigator.clipboard.writeText(quote).then(() => PR.toast(PR.t("已复制"))); return; }
     if (kind === "chat") { PR.chatAsk({ anchor, quote }); return; }
-    const pen = PR.prefs.pen === "underline" ? "underline" : "marker";
+    const pen = selectedPen || (PR.prefs.pen === "underline" ? "underline" : "marker");
     color = color || (PR.prefs.penColors || {})[pen] || "yellow";
-    const note = { anchor, key, quote, prefix, suffix, kind, color };
+    const note = { anchor, key, start, quote, prefix, suffix, kind, color };
     if (side) note.side = side;
     if (parts) note.parts = parts;
-    if (PR.prefs.pen === "underline") note.style = "underline";
+    if (pen === "underline") note.style = "underline";
     if (kind === "highlight") {
-      PR.prefs.penColors = { ...PR.prefs.penColors, [pen]: color };
-      PR.applyPrefs();
       Object.assign(note, { id: PR.uid("n"), body: "", created: PR.nowIso() });
-      PR.saveNote(note);
-      PR.markNote(note);
-      PR.toast(PR.t("已划线　点划线可以写笔记或改颜色"), { label: PR.t("撤销"), fn: () => PR.undoAnnotation(note.id) }, 2600);
+      paintHighlight(note, "toggle");
+      rememberPen(pen, color);
+      // Finish the native input event before clearing its range. A new selection
+      // can start before the timer runs and must keep its toolbar and text.
+      const sel = getSelection();
+      const range = sel.rangeCount ? sel.getRangeAt(0) : null;
+      setTimeout(() => {
+        if (pendingSel || (sel.rangeCount && sel.getRangeAt(0) !== range)) return;
+        selbar().classList.remove("open");
+        if (sel.rangeCount) sel.removeAllRanges();
+      }, 0);
     } else PR.startNote(note);
   };
   selbar().addEventListener("mousedown", (e) => e.preventDefault()); // 点按钮时别丢掉选区
   selbar().addEventListener("click", (e) => {
     const p = e.target.closest("[data-pen]");
     if (p) {  // 点笔直接用这支笔上次的颜色划线，色块仍可直接指定颜色。
-      PR.prefs.pen = p.dataset.pen;
-      return PR.selectionAction("highlight");
+      return PR.selectionAction("highlight", undefined, p.dataset.pen);
     }
     const b = e.target.closest("button[data-s]"); if (b) PR.selectionAction(b.dataset.s, b.dataset.color);
   });
@@ -250,14 +304,23 @@
       const c = ev.target.closest("[data-hl-color]"), b = ev.target.closest("[data-hl]");
       if (c) {
         const pen = n.style === "underline" ? "underline" : "marker";
-        PR.prefs.penColors = { ...PR.prefs.penColors, [pen]: c.dataset.hlColor }; PR.applyPrefs();
-        PR.saveNote(Object.assign({}, n, { color: c.dataset.hlColor })); PR.markNote(n); PR.hidePopover(); return;
+        rememberPen(pen, c.dataset.hlColor);
+        PR.hidePopover();
+        paintHighlight({ ...n, color: c.dataset.hlColor }, c.dataset.hlColor === (n.color || "yellow") ? "erase" : "set");
+        return;
       }
       const sty = ev.target.closest("[data-hl-style]");
-      if (sty) { const x = Object.assign({}, n); if (sty.dataset.hlStyle === "underline") x.style = "underline"; else delete x.style; PR.saveNote(x); PR.markNote(n); PR.hidePopover(); return; }
+      if (sty) {
+        const x = { ...n }, underline = sty.dataset.hlStyle === "underline";
+        if (underline) x.style = "underline"; else delete x.style;
+        rememberPen(sty.dataset.hlStyle, n.color || "yellow");
+        PR.hidePopover();
+        paintHighlight(x, underline === ul ? "erase" : "set");
+        return;
+      }
       if (!b) return;
       PR.hidePopover();
-      if (b.dataset.hl === "del") { PR.commit({ op: "note_del", id: n.id }); PR.markNote(n); }
+      if (b.dataset.hl === "del") paintHighlight(n, "erase");
       else { PR.saveNote(Object.assign({}, n, { kind: b.dataset.hl })); PR.openNoteEditor(n.id); }
     };
   };

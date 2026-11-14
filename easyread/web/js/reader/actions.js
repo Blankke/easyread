@@ -3,6 +3,11 @@
 (function (PR) {
   "use strict";
   const S = PR.state;
+  // In Windows Electron a native text drag can hit a block while Chromium
+  // is unlocking its deferred layout. Keep selectable blocks laid out there.
+  const ua = window.navigator?.userAgent || "";
+  const stableLayout = ua.includes("Windows") && ua.includes("Electron/");
+  if (stableLayout) document.documentElement.classList.add("stable-text-layout");
   let current = null;
   const bar = () => PR.$("#blockbar");
 
@@ -19,7 +24,7 @@
     const b = PR.blockById[id];
     if (!b) return [];
     const keys = PR.blockKeys(b);
-    const hasEn = PR.hasZh(b) && (b.en || b.caption_en || b.image_en || (b.items || []).some((i) => i.en));  // 只读原文、没译的块正文就是英文
+    const hasEn = PR.hasZh(b) && (b.en || b.caption_en || b.image_en || b.translated_image?.src || (b.items || []).some((i) => i.en));  // 只读原文、没译的块正文就是英文
     const list = [
       { k: "note", label: PR.t("笔记"), icon: "note", fn: () => PR.startNote({ anchor: id }) },
       { k: "question", label: PR.t("提问"), icon: "question", fn: () => PR.startNote({ anchor: id, kind: "question" }) },
@@ -27,7 +32,7 @@
     if (PR.canChat() && PR.feature("chat")) list.push({ k: "chat", label: PR.chatOpen && PR.chatOpen() ? PR.t("引用到对话") : PR.t("问 AI"), icon: "sparkle", fn: () => PR.chatAsk({ anchor: id }) });
     if (hasEn && PR.feature("en")) list.push({ k: "en", label: (PR.originalFirst() && PR.prefs.mode !== "bi" ? PR.t("译文") : PR.t("原文")), icon: "en", fn: () => PR.toggleEn(id) });
     if (keys.length && PR.feature("edit")) list.push({ k: "edit", label: PR.t("改译文"), icon: "edit", fn: () => { if (PR.originalFirst()) PR.toggleEn(id, true); const zh = PR.$("#b-" + CSS.escape(id) + " .zh[data-key]"); zh && PR.editZh(zh); } });
-    if (b.page && PR.feature("pages")) list.push({ k: "page", label: PR.t("PDF p.{page}", { page: b.page }), icon: "page", fn: () => PR.openPage(b.page, id) });
+    if (b.page && PR.feature("pages")) list.push({ k: "page", label: PR.t("查看 PDF 第 {page} 页", { page: b.page }), icon: "page", fn: () => PR.openPage(b.page, id) });
     // 重译花 token、容易误点：默认关，开了也只放在“⋯”菜单里
     if (keys.length && PR.canAsk() && PR.feature("retranslate")) list.push({ k: "redo", label: PR.t("让模型重译这段…"), icon: "redo", menuOnly: true, fn: () => retranslate(id) });
     list.forEach((a) => { a.kbd = PR.keyOf ? PR.keyOf(a.k) : ""; });
@@ -76,6 +81,8 @@
   function blockMenu(id, where) {
     const b = PR.blockById[id];
     const items = actionsFor(id).map((a) => ({ label: a.label, icon: a.icon, kbd: a.kbd, fn: a.fn }));
+    if (b?.type === "figure" && PR.store.mode === "server") items.push({label: PR.t("重新截取图片"), icon: "edit", fn: () => PR.cropFigure(id)});
+    if (b?.type === "figure" && b.src && PR.store.mode === "server" && S.figure_images_enabled) items.push({label: PR.t("重新生成译图"), icon: "redo", fn: () => PR.generateFigureImages([id], true)});
     items.push("-",
       { label: PR.t("复制译文"), icon: "copy", kbd: PR.keyOf("copy"), fn: () => copyBlock(id, "zh") },
       { label: PR.t("复制英文原文"), icon: "copy", fn: () => copyBlock(id, "en") },
@@ -97,7 +104,7 @@
   async function copyMath(b) {
     if (b.type !== "math" || typeof b.tex !== "string" || !b.tex.trim()) return;
     try {
-      // 直接复制 KaTeX 使用的源码，保留反斜杠和多行结构，不混入序号或 Markdown 定界符。
+      // 复制 KaTeX 的原始源码，保留反斜杠与多行结构，便于直接粘贴到编辑器。
       await navigator.clipboard.writeText(b.tex);
       PR.toast(PR.t("已复制公式 LaTeX"));
     } catch (error) {
@@ -134,17 +141,36 @@
     const id = host && host.dataset.id;
     const b = PR.blockById[id];
     if (t.dataset.t === "copy-math" && b) return copyMath(b);
+    if (t.dataset.t === "figure-image" && b) PR.generateFigureImages([id], true);
+    if (t.dataset.t === "figure-images") PR.generateFigureImages();
+    if (t.dataset.t === "retry-figure-images") PR.generateFigureImages(Object.keys(S.job.image_failed || {}), true);
+    if (t.dataset.t === "cancel-figure-images") PR.api("/api/p/" + PR.pid + "/cancel", {method: "POST", body: {}}).then(() => PR.poll()).catch(error => PR.toast(error.message));
     if (t.dataset.t === "page" && b) PR.openPage(b.page, id);
     if (t.dataset.t === "pin") host.classList.toggle("notes-open");
     if (t.dataset.t === "stale") PR.showStale(t.closest(".zh"));
+    if (t.dataset.t === "retry-prepare") PR.api("/api/p/" + PR.pid + "/prepare", { method: "POST", body: {} }).then(() => PR.poll()).catch(error => PR.toast(PR.esc(error.message)));
     if (t.dataset.t === "retry-failed") PR.api("/api/p/" + PR.pid + "/translate", { method: "POST", body: { failed: true } }).then(() => { PR.toast(PR.t("正在重试，译好后自动替换")); PR.poll(); });
-    if (t.dataset.t === "translate-en") PR.api("/api/p/" + PR.pid + "/translate", { method: "POST", body: { en: true } }).then(() => { PR.toast(PR.t("已开始翻译，译好的页就地换成{lang}，笔记和划线都保留", { lang: PR.targetName((PR.state.paper.meta || {}).target || PR.target) })); PR.poll(); });
+    if (t.dataset.t === "translate-en") PR.startTranslation(PR.pid, {en:true}).then(started => { if (started) { PR.toast(PR.t("已开始翻译，译好的页就地换成{lang}，笔记和划线都保留", { lang: PR.targetName((PR.state.paper.meta || {}).target || PR.target) })); PR.poll(); } }).catch(error => PR.toast(error.message));
     if (t.dataset.t === "model-settings") PR.openSettings("chat");
     if (t.dataset.t === "read-rest") PR.api("/api/p/" + PR.pid + "/translate", { method: "POST", body: { read: true, ...((S.job || {}).state === "error" ? { scope: S.job.scope || "all" } : {}) } }).then(() => { PR.toast(PR.t("已开始整理，整理好的页会自动出现")); PR.poll(); }).catch(error => PR.toast(PR.esc(error.message)));
-    if (t.dataset.t === "translate-rest") PR.api("/api/p/" + PR.pid + "/translate", { method: "POST", body: {} }).then(() => { PR.toast(PR.t("已开始翻译，译好的页会自动出现")); PR.poll(); });
+    if (t.dataset.t === "translate-rest") PR.startTranslation(PR.pid).then(started => { if (started) { PR.toast(PR.t("已开始翻译，译好的页会自动出现")); PR.poll(); } }).catch(error => PR.toast(error.message));
   });
 
   /* ---------- 重译 ---------- */
+  let submittingImages = false;
+  PR.generateFigureImages = async function (ids, force = false) {
+    if (PR.store.mode !== "server" || !S.figure_images_enabled || submittingImages) return;
+    if (["queued", "running"].includes((S.job || {}).state)) return PR.toast(PR.t("这篇论文已有任务在排队或运行，请等它结束，或先取消再重试。"));
+    submittingImages = true;
+    try {
+      if (PR.flushPending && !await PR.flushPending()) throw new Error(PR.t("请先保存文字修改，再生成译图"));
+      await PR.api("/api/p/" + PR.pid + "/figure-images", {method: "POST", body: {...(ids ? {ids} : {}), force}});
+      PR.toast(PR.t("已开始生成译图，正文和笔记保持不变"));
+      await PR.poll();
+    } catch (error) { PR.toast(error.message); }
+    finally { submittingImages = false; }
+  };
+
   function retranslate(id) {
     const el = document.getElementById("b-" + id);
     PR.popover(el.querySelector(".zh") || el, '<div class="hd">' + PR.t("让模型重译这段") + '</div>' +
@@ -188,7 +214,7 @@
   document.addEventListener("mouseout", (e) => { if (e.target.closest && e.target.closest("a.cite, a.xref")) { clearTimeout(hoverT); PR.hidePopoverSoon(); } });
   document.addEventListener("click", (e) => {
     const footnote = e.target.closest("a.footnote-ref");
-    if (footnote) { e.preventDefault(); PR.jumpTo(footnote.dataset.footnote); return; }
+    if (footnote) { e.preventDefault(); PR.jumpTo(footnote.dataset.footnote, { origin: footnote }); return; }
     const a = e.target.closest("a.cite, a.xref");
     if (!a) return;
     e.preventDefault();
@@ -198,7 +224,7 @@
   function refCard(a) {
     if (a.classList.contains("cite")) {
       const r = PR.refById[a.dataset.ref];
-      return r ? '<div class="ref"><span class="n">[' + PR.esc(r.id) + "]</span>" + PR.esc(r.text) + "</div>" : "";
+      return r ? '<div class="ref">' + (PR.refLabel(String(r.id)) ? '<span class="n">' + PR.esc(PR.refLabel(String(r.id))) + "</span>" : "") + PR.esc(r.text) + "</div>" : "";
     }
     const b = PR.blockById[PR.xindex[a.dataset.kind][a.dataset.key]];
     if (!b) return "";
@@ -213,10 +239,10 @@
     if (cancelCentering) cancelCentering();
     // Deferred blocks change height during a long scroll. Keep the destination
     // laid out and measure again after scrolling and late image/layout changes.
-    const host = el.closest("#paper .blk") || el;
-    const visibility = host.style.contentVisibility;
-    host.style.contentVisibility = "visible";
-    let settled = !!instant, stopped = false, idleTimer;
+    const host = stableLayout ? null : el.closest("#paper .blk") || el;
+    const visibility = host?.style.contentVisibility;
+    if (host) host.style.contentVisibility = "visible";
+    let settled = !!instant, stopped = false, idleTimer, inputTimer;
     const destination = () => {
       const r = el.getBoundingClientRect(), bar = (PR.$("#bar") || {}).offsetHeight || 0;
       const room = innerHeight - bar;
@@ -235,14 +261,20 @@
       idleTimer = setTimeout(settle, 120); // Fallback for webviews without scrollend.
     }
     const observer = new ResizeObserver(() => { if (settled) align(); });
+    // Let Chromium finish native hit testing before changing the clicked block's layout.
+    function stopAfterPointer() {
+      clearTimeout(inputTimer);
+      inputTimer = setTimeout(stop, 0);
+    }
     function stop() {
       stopped = true;
-      clearTimeout(idleTimer); clearTimeout(fallback); clearTimeout(deadline);
+      clearTimeout(idleTimer); clearTimeout(inputTimer); clearTimeout(fallback); clearTimeout(deadline);
       observer.disconnect();
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("scrollend", settle);
-      ["wheel", "touchstart", "pointerdown", "keydown"].forEach(type => window.removeEventListener(type, stop, true));
-      host.style.contentVisibility = visibility;
+      ["wheel", "keydown"].forEach(type => window.removeEventListener(type, stop, true));
+      ["pointerdown", "touchstart"].forEach(type => window.removeEventListener(type, stopAfterPointer, true));
+      if (host) host.style.contentVisibility = visibility;
       cancelCentering = null;
     }
     const fallback = setTimeout(settle, 1400);
@@ -252,7 +284,8 @@
     if (paper && paper !== el) observer.observe(paper);
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("scrollend", settle, { passive: true });
-    ["wheel", "touchstart", "pointerdown", "keydown"].forEach(type => window.addEventListener(type, stop, { passive: true, capture: true }));
+    ["wheel", "keydown"].forEach(type => window.addEventListener(type, stop, { passive: true, capture: true }));
+    ["pointerdown", "touchstart"].forEach(type => window.addEventListener(type, stopAfterPointer, { passive: true, capture: true }));
     cancelCentering = stop;
     window.scrollTo({ top: destination(), behavior: instant ? "instant" : "smooth" });
   };
@@ -262,7 +295,7 @@
     const el = document.getElementById(domId);
     if (!el) return;
     opts = opts || {};
-    if (!opts.noBack && PR.rememberSpot) PR.rememberSpot(el);  // 跳得远就记下原处，好回去
+    if (!opts.noBack && PR.rememberSpot) PR.rememberSpot(el, opts.origin);  // 跳得远就记下原处，好回去
     PR.centerOn(el, opts.instant);
     if (!opts.noFlash) { el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
     history.replaceState(history.state, "", "#" + domId);

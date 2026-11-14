@@ -7,19 +7,23 @@
 
 截图文件名带上页码、框和 PDF 文件身份的哈希（figures/crop-<页>-<哈希>.webp）：
 重译改了框就换新文件，不会沿用旧图或浏览器缓存，同 id 的块在别的页上也不会撞到同一张。
+换新文件后旧截图如果没有别处引用（含手动裁剪快照里留档的 src），fill 会顺手清掉。
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import math
+import re
 import threading
 
 from . import pdfwork
 from ..app.log import log
-from ..library.store import Workspace
+from ..library.store import Workspace, dir_lock
 
 _running: set[str] = set()
+
+_CROP_NAME = re.compile(r"crop-\d+-[0-9a-f]{20}\.webp\Z")
 
 
 def figure_box(value) -> list[float] | None:
@@ -94,7 +98,7 @@ def _pending(ws):
     out = []
     for b in (ws.load("paper") or {}).get("blocks", []):
         src = b.get("src", "")
-        if b.get("type") != "figure" or src and not src.startswith("figures/crop-"):
+        if b.get("type") != "figure" or "manual_crop" in b or src and not src.startswith("figures/crop-"):
             continue
         loc = layout.get(b.get("id")) or {}
         box = figure_box(loc.get("crop") or loc.get("box"))
@@ -131,18 +135,67 @@ def fill(ws) -> int:
         except Exception:  # noqa: BLE001
             log.exception("截图失败 %s %s", ws.root, block["id"])
     if done:
+        stale: set[str] = set()
+
         def apply(paper):
             count = 0
             for b in paper.get("blocks", []):
                 done_item = done.get(b.get("id"))
                 if done_item and b == done_item[0]:
                     _, page, box, src = done_item
+                    if b.get("src") and b["src"] != src:
+                        stale.add(b["src"])
                     b["src"] = src
                     b["abox"] = list(box)  # 截图实际用的框（不含题注），前端按它占原页的比例定宽；box 仍是模型给的框
                     count += 1
             return count
-        return ws.update("paper", apply)
+        count = ws.update("paper", apply)
+        _drop_orphans(ws, stale)
+        return count
     return 0
+
+
+def _figure_srcs(paper) -> set[str]:
+    """paper.json 里指向截图的所有引用：块 src，加上手动裁剪快照里留档的旧 src（reset 要恢复它）。"""
+    out = set()
+    for b in paper.get("blocks", []):
+        if isinstance(b.get("src"), str):
+            out.add(b["src"])
+        snapshot = b.get("manual_crop")
+        if isinstance(snapshot, dict):
+            if isinstance(snapshot.get("src"), str):
+                out.add(snapshot["src"])
+    return out
+
+
+def _drop_orphans(ws, stale: set[str]) -> None:
+    """src 换新截图后清掉不再被引用的旧自动截图：定位修正、重译换框都会留下孤儿文件。
+    引用以清理那一刻的 paper.json 为准，只删自动裁剪命名的文件；删不掉就留着，无害。"""
+    if not stale:
+        return
+    # Hold the paper write lock through the final reference check and unlink.
+    # A concurrent crop/reset must not restore a file between these operations.
+    try:
+        with dir_lock(ws.root):
+            referenced = _figure_srcs(ws.load("paper"))
+            directory = ws.root.resolve() / "figures"
+            if directory.resolve() != directory:
+                return  # Do not follow a relocated figures directory/junction.
+            for src in stale:
+                if not isinstance(src, str) or src in referenced:
+                    continue
+                name = src.removeprefix("figures/")
+                if src != "figures/" + name or not _CROP_NAME.fullmatch(name):
+                    continue
+                target = directory / name
+                if target.is_symlink() or target.resolve().parent != directory:
+                    continue
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    log.exception("Unable to remove replaced crop %s", src)
+    except Exception:  # Cleanup is optional; keep files if state/locking fails.
+        log.exception("Unable to check replaced crops in %s", ws.root)
 
 
 def fill_later(ws, gate=None) -> None:

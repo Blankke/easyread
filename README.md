@@ -21,10 +21,11 @@
 
 ## 它和“把 PDF 丢给翻译软件”有什么不一样
 
-- **像读一本排好版的中文书。** 宋体正文、舒服的行宽和行距，公式用 KaTeX 按原文重排，表格是三线表，参考文献保留原文。顶栏一键切深色。
+- **像读一本排好版的中文书。** 宋体正文、舒服的行宽和行距，公式用 KaTeX 按原文重排，表格是三线表，参考文献保留原文；原文的粗体、斜体在译文里照样保留。顶栏一键切深色。
 - **随时核对原文。** 一键切“对照”，每段下面附英文；右侧可以开原页，跟着阅读位置翻页，还会框出当前段落在原页的位置。鼠标放在原页区域，按住 `Ctrl` 滚动滚轮可缩放 PDF（50%–400%），窗口和面板宽度保持不变；放大后可横向滚动查看。
 - **在论文里找内容。** 按 Ctrl / ⌘ + F 同时搜索原文和译文，显示匹配数、高亮结果，用 Enter / Shift + Enter 跳到下一处 / 上一处
 - **翻译和解释分开。** 正文只放忠实的译文；AI 的解释、回答放在页边，一眼就能分清哪句是论文说的。
+- **沿引用继续读。** 正文中能对应的数字、字母编号或作者年份可跳到参考文献；文末可返回正文引用位置。阅读页左侧“引用”按树状展开本文参考文献和库中引用本文的论文，匹配到库内论文可直接打开，并可返回上一论文的原阅读位置；未入库的条目可通过 DOI/arXiv 或选择本地 PDF 加入并关联，也可搜索。引用关系取自本地已整理的参考文献，并非完整的全球引用索引；匹配不确定时不会自动连线。
 - **边读边问 AI。** 右侧“问 AI”面板实时对话，回答逐字流出来；可以一次引用好几段（选中文字拖进输入框就行）。问“我标红的那些公式有什么联系”，它会按颜色找出你的划线。可以开多个对话，模型单独选：Claude、GPT（Codex）、DeepSeek、通义、本机 Ollama……好的回答一键放到页边。
 - **ASD-STE100 问答。** 在“问 AI”的“回答方式”里选择这个模式，用简明中文回答问题或总结论文，保留专业术语、公式和数值。模式按对话保存，支持复制、放到页边和导出 Markdown。[ASD-STE100](https://www.asd-ste100.org/STE_faq.html) 是英文标准；这个模式借鉴其短句、主动表达和术语一致等原则，提供中文写作辅助，不将中文答案标为符合英文标准或已认证。正文过长时只提供节选，回答需说明依据范围。
   中文提示词另参考 [asd-ste100-skill](https://github.com/danyuchn/asd-ste100-skill) 的语义保留原则：保留条件、范围和“可能／建议／必须”等语气强度，不为简短而丢失精度。
@@ -50,6 +51,7 @@
 | **Claude Code**（推荐） | 装好并登录 [Claude Code](https://docs.claude.com/en/docs/claude-code/setup) | 不用 Key，用你订阅的额度；会自己看原页图核对公式，译文最好 |
 | **Codex CLI** | 装好并登录 [Codex](https://github.com/openai/codex) | 不用 Key，用 ChatGPT 账号 |
 | **CodeBuddy CLI** | 按[官方 CLI 文档](https://www.codebuddy.cn/docs/cli/headless)安装并登录，账号需有 CLI 使用权益 | 不用 Key；模型名自己填，留空用 CLI 默认模型。[当前免费体验版不含 CLI](https://www.codebuddy.cn/docs/workbuddy/Pricing)，与 WorkBuddy 同账号共享积分 |
+| **ZCode CLI（实验性）** | 按[官方 CLI 指南](https://github.com/zai-org/ZCode/tree/main/apps/zcode-cli/docs/usage)安装并登录，使 `zcode` 在 PATH 中可用 | 复用本机登录态；模型和推理选项在 ZCode 中选择。支持翻译、问 AI 和图片附件（需模型支持）；真实账号调用尚待验证 |
 | **Grok Build / Antigravity CLI / Cursor CLI** | 装好并登录 [Grok Build](https://x.ai/cli)、[Antigravity CLI](https://antigravity.google/docs/cli) 或 [Cursor CLI](https://cursor.com/docs/cli/installation) | 不用 Key，用各自的订阅；模型名自己填，留空用它的默认 |
 | **API 接口 · 国内直连**：DeepSeek / 智谱 / 阿里云百炼 / Kimi / 硅基流动 / 魔搭 | API Key | 智谱 GLM-4.7-Flash、硅基流动小模型免费；DeepSeek 一篇 20 页论文几毛钱 |
 | **API 接口 · 海外（要梯子）**：OpenAI / Anthropic / Gemini / OpenRouter / Groq / Cerebras | API Key | Gemini、OpenRouter、Groq、Cerebras 有免费额度 |
@@ -61,6 +63,12 @@
 设置里会自动检测本机装了什么，点“试译一句”马上知道能不能用。某一页翻译失败（限流、网络、额度）会自动重试，还不行就先跳过、接着译后面的页，最后一键“重试失败的页”。
 
 默认逐篇翻译，单篇内部仍可分段并发。在“设置 → 模型 → 翻译”中可将“同时翻译几篇”设为 1–4 篇，重启后生效。多篇并行会叠加分段并发，增加内存和模型限流风险，建议保持默认 1 篇；详见[配置说明](docs/paper-concurrency.md)
+
+**生成译图（可选）**：在“设置 → 模型 → 翻译设置”打开“生成译图”，默认使用 **Codex 订阅**：需要安装支持内置生图的 Codex CLI，并使用 ChatGPT 登录，不需要另填 API Key。生图消耗订阅额度，具体限制见 [Codex 生图用量说明](https://learn.chatgpt.com/docs/pricing)。不可用或额度不足时，回退到原图和文字译文，**不会自动调用单独计费的 API**。也可主动选择“图片 API（单独计费）”，填写兼容 Images Edits 的地址、模型和 Key。
+
+翻译先保存正文和图内文字，再按这篇论文的目标语言生成译图，尽量保留原图布局。图片沿用正文的“原文／译文／双语”设置：分别显示原图、译图或两者，双语顺序也同步。有可用译图时不重复展示图内文字译文；没有可用译图或加载失败时，显示原图和文字译文。离线导出保留相同的切换和兜底能力。功能默认关闭；开启后自动为后续翻译生图，并显示已有论文的补图入口。生成结果不保证逐像素保真，图表细节可与原图对照。
+
+**已翻译论文补图或重新生图**：先在设置中开启“生成译图”，然后打开论文，在标题下点击“为本文生成译图”，只补齐缺失或已过期的译图；单张图片下可点击“生成译图 / 重新生成译图”，也可从图片右键菜单操作，无需重译正文。关闭开关时，这些入口和失败重试入口都会隐藏，已有译图保留；正在运行的任务仍可查看进度和取消。手动修改过的图内文字会作为生成参考；旧论文没有保存图内文字时，直接根据原图翻译。失败时保留已有图片、译文和笔记。
 
 <p align="center"><img src="docs/images/settings.jpg" width="640" alt="设置"></p>
 
@@ -123,16 +131,9 @@ easyread
 
 ```bash
 npm install
-python -m venv .venv
-source .venv/bin/activate
-which python
-python -m pip install -e . pyinstaller
+python -m pip install pyinstaller
 npm run dev
 ```
-
-Windows PowerShell 中激活环境用 `.\.venv\Scripts\Activate.ps1`，确认解释器用 `where.exe python`。运行 `npm run dist` 前也要激活同一环境；该命令调用 `scripts/build_backend.py` 构建后端，再打包桌面安装程序。
-
-在 Windows 上使用时，请从 PowerShell 启动；WSL 中运行 `npm run dev` 打开的是 Linux 窗口。开发启动脚本会按系统选择 Electron 程序，同一源码目录可分别保存 Windows 和 Linux 程序。若 Windows 的 Node 无法下载 Electron，在 PowerShell 运行 `.\scripts\install_electron_windows.ps1`，它会下载官方压缩包、校验 SHA-256 并安装到独立目录；若 `npm install` 因下载步骤中断，先用 `npm install --ignore-scripts` 安装依赖，再运行该脚本。Python 虚拟环境仍应按系统分别安装。Windows 原生标题栏支持系统贴靠与最大化；`F11` 切换全屏，`Ctrl++` / `Ctrl+-` 缩放界面，`Ctrl+0` 恢复默认的 115%。窗口尺寸和缩放在下次启动时恢复。
 
 生成可分发安装包：
 
@@ -140,68 +141,7 @@ Windows PowerShell 中激活环境用 `.\.venv\Scripts\Activate.ps1`，确认解
 npm run dist
 ```
 
-生成 Windows x64 **免安装单文件 EXE**，在 Windows PowerShell 的项目目录执行：
-
-```powershell
-# 首次构建安装打包依赖，并验证生成的 EXE 可以独立启动
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_windows_portable.ps1 -InstallDependencies -VerifyLaunch
-# 后续重新构建（自动激活项目 .venv，并检查实际 Python 路径）
-npm run dist:portable
-```
-
-构建机需要 Node.js 22+ 和 Windows Python 3.10+，以及项目 `.venv`（尚未创建时先运行 `py -3.12 -m venv .venv`）。输出为 `dist/electron/EasyRead-Portable-版本号-x64.exe`，发给别人时只需这一份 EXE；使用者无需安装 Python、Node.js 或 Electron。双击会先自动解压再打开窗口。便携版采用 [electron-builder 的 portable 目标](https://www.electron.build/nsis/)。
-
-论文与设置保存在 EXE 旁边的 `data` 文件夹，目录不可写时使用 `~/EasyRead`；移动已有文献时请一起带上 `data`。ChatGPT 登录缓存保存在本机 `%APPDATA%\EasyRead`。升级时关闭程序并替换 EXE，保留 `data`，便携版不执行安装版的应用内更新。构建只打包程序与运行环境，首次使用需要配置模型或登录 ChatGPT；CLI 模型来源仍需另装对应 CLI。当前源码目录的文献、配置和密钥不会打入分发文件。
-
 输出在 `dist/electron/`：Windows 为 NSIS 安装程序，macOS 为 DMG（另有一个给应用内更新用的 zip），Linux 为 AppImage。macOS 包由 `scripts/mac_sign.cjs` 用固定的自签名证书签名，证书从环境变量 `MAC_SIGN_P12`、`MAC_SIGN_P12_PASSWORD` 读（发版时来自仓库 Secrets）；本机没设时退回临时签名，这样打出的包不能应用内更新。推送 `v*` 标签后，GitHub Actions 会在三个系统上构建，并把这些安装包自动附加到 GitHub Release；源码 zip 仍会由 GitHub 保留。打包后的文献库和设置：Windows 存在安装目录下的 `data`（安装目录写不进去时退回 `~/EasyRead`），macOS、Linux 存在 `~/EasyRead`。
-
-桌面版可在“设置 → 模型”中打开 ChatGPT 网页，登录并刷新账号可用的模型列表，然后添加“ChatGPT 网页”模型卡片并设为翻译或问 AI 默认。翻译任务会上传原始 PDF、阅读标记及所需附件，按批次回写阅读区。问 AI 只发送文字消息，包含问题、引用段落和按需选取的划线；按论文题名和来源检索项目中已有的论文原本，不上传 PDF、笔记或其他附件，也不重复粘贴整篇论文。项目资料无法读取时，回答须说明依据范围。网页任务在独立的隐藏窗口中执行。任务期间手动打开侧栏，会显示只读的实时画面和当前阶段；调整宽度、关闭侧栏及切换 EasyRead 页面均不改变执行页面。空闲时侧栏显示可交互网页，用于登录和核对会话。需要登录或验证时，EasyRead 会提示你主动打开 ChatGPT；完成后可关闭网页并重试。手动打开的网页可拖动左侧边框调节宽度，拖到窗口右边缘松开即可关闭，也可以点顶部“关闭”，后台任务会继续执行。同一批次重试会先从原网页会话回收已经完成的回答，避免重复发送。网页控件变化或发送状态不明时，可主动打开内置网页核对后再重试。普通浏览器打开的 EasyRead 页面不支持这一来源。
-
-首条网页翻译任务会在当前登录账号中按需准备“翻译”项目；项目不存在则自动创建，并补齐通用指令和“仅限项目”记忆设置，保留原有指令。成功配置按账号和指令版本保存，后续批次直接复用论文会话，重启后也无需反复打开项目设置。项目地址失效或指令版本变化时会重新准备；需要主动核对设置时，可运行下方的 `--setup-project` 验证命令。每篇论文和每个问 AI 对话各用自己的项目会话。问 AI 直接复用已有项目，不修改项目指令或记忆模式。登录检查使用内置网页的 Chromium 会话；提交前出现临时连接或编辑区加载故障时，最多自动刷新一次，待确认回答不会被自动刷新。项目操作、模型读取与翻译发送按顺序执行；打开或收起网页只改变显示状态。
-
-文献库和阅读页的顶栏都有“打开 ChatGPT 网页”。网页翻译默认每批最多 4 页，正文较长时会自动拆小；可在翻译设置中调整为 1–4 页。网页任务在同一会话中串行执行。每批回答先保存在论文目录，再解析并把已译页写入 `paper.json`；漏掉的页只单独补译。重启或续译时会跳过已完成页，并从本地回答继续处理尚未落成译文的批次。
-
-网页回答若把公式的 TeX 反斜杠写成单个，EasyRead 会在解析 JSON 时修复并保留公式内容。确实无法解析的回答会让当前批次重新生成一次；仍失败时只标记该批次，保留原始回答供排查，并继续后续页。
-
-“网页结果交付”提供 `text`（默认）、`file` 和 `auto`。文件模式要求模型生成包含完整原文、译文、公式、图表和检查结果的 JSON 附件；Electron 下载到论文专属目录，核对任务编号、PDF 指纹、页码和完成声明，再交给原有译文检查与合并流程。`auto` 只在同一回答包含合法的完整任务信封时回退正文。下载失败会保留原会话，重试先回收附件；发送归属不明时需在网页核对，再点击“核对网页后允许重试”。正文模式仍限制每批 1–4 页并按密度拆分；文件模式每批默认 4 页，可设 1–12 页，较大批次需要根据自己的论文和账号实测。
-
-翻译会话默认在累计 12 次请求或 48 页后，于同一个“翻译”项目内轮换。可关闭自动轮换，设置消息数阈值（默认 0，关闭），或对指定论文点击“下次翻译使用新会话”。有待确认请求时暂不轮换；历史 URL 保留，“问 AI”会话独立。每轮从本地论文和阅读数据生成有长度限制的上下文快照，冻结到当前任务，包含术语、相邻段落、章节和阅读要求。当前任务的 PDF、原页图及辅助原文仍负责提供事实依据。
-
-共享术语库同步默认关闭，项目文件数量上限默认 5（本地保护值，按账号实际限额调整）。启用后，已参与同步的论文术语按论文和目标语言合并为一个逻辑资料；新版本经网页确认后才清理 EasyRead 已确认上传的旧版本。翻译任务的原始 PDF 和论文快照继续作为会话附件。网页入口、文件标识、上传结果或配额无法核实时会显示同步失败并继续使用会话附件。项目文件、记忆和聊天记录都是派生资料，完成页码及人工修改始终由本地数据控制。
-
-在“问 AI”中选 ChatGPT 网页模型时，模型菜单提供“回答深度”（简短、适中、详细、严谨、深入）。该选项会写入本轮提问，控制回答的详略和核对要求；网页模型实际使用的内部思考强度仍由 ChatGPT 决定。网页回答完成并通过稳定性核验后，会显示在 EasyRead 对话面板并保存到对话记录。
-
-Windows 上可用以下命令复验后台链路。真实论文验证前先在桌面版登录，执行时请退出已有桌面进程，避免两个进程共用登录缓存。论文验证会上传 PDF 并发送一次测试提问，输出回答长度与 JSON 校验结果；本地后台输入验证无需账号。
-
-```powershell
-# 无需账号的网页链路回归测试
-npm run test:web
-# 验证隐藏窗口的视口、输入、发送与长回答提取
-node .\scripts\dev_desktop.cjs .\scripts\verify_web_background.cjs
-# 用本地 HTTP 附件验证真实 Electron 下载和离线恢复，无需账号
-node .\scripts\dev_desktop.cjs .\scripts\verify_web_artifact.cjs
-# 开启阶段耗时，区分网页生成等待和本地回传耗时
-$env:EASYREAD_WEB_TRACE="1"
-# 验证真实论文上传、发送和回答回收
-node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs .\library\<论文ID>\source.pdf "模型名"
-Remove-Item Env:EASYREAD_WEB_TRACE
-# 按需重新核对项目设置
-node .\scripts\dev_desktop.cjs .\scripts\verify_chatgpt_web.cjs --setup-project
-# 验证正式翻译队列并写回指定论文（会实际翻译指定页，省略页码则续译剩余页）
-. .\.venv\Scripts\Activate.ps1
-python -c "import sys; print(sys.executable)"
-node .\scripts\dev_desktop.cjs .\scripts\verify_web_translation.cjs <论文ID> 3-4 --monitor
-# 用隔离合成论文验证文件交付（实际发送模型请求；结果保留在 outputs/web-translation）
-node .\scripts\dev_desktop.cjs .\scripts\verify_web_translation.cjs --fixture file 4
-# 用相同合成内容对比正文交付；文件模式可分别测 8、12 页
-node .\scripts\dev_desktop.cjs .\scripts\verify_web_translation.cjs --fixture text 4
-# 逐页发送并在同项目内轮换；项目资料同步可另外加 --project-sync
-node .\scripts\dev_desktop.cjs .\scripts\verify_web_translation.cjs --fixture file 2 --rotate-after-one
-# 导出实测指标，不输出论文正文或凭据
-node .\scripts\web_translation_metrics.cjs .\outputs\web-translation\<测试目录>\library\transport-fixture
-```
-
-合成验证覆盖传输、结构化写回及页码完整性；复杂公式、双栏顺序和真实图表准确性需用具有代表性的论文进一步核对。指标中 `null` 表示该阶段没有可用测量，不表示耗时为零。详细任务信封、持久化目录与恢复规则见 [数据格式](docs/data-format.md)。
 
 ## 怎么用
 
@@ -242,6 +182,16 @@ easyread export ID                     # 导出单文件离线 HTML
 
 **能离线看、发给别人吗？** 能。文献库里右键一篇论文 → “导出离线 HTML”，得到一个单文件网页（命令行是 `easyread export ID`）。对方不用装 EasyRead，双击用浏览器打开就能读：译文、公式、原页图、你的划线和笔记都在里面，也能切对照、开原页、接着划线。原页图是打包进去的，所以文件不小（27 页的论文约 10 MB）。在离线版里新做的划线和笔记只存在打开它的那个浏览器里；想并回文献库，在左侧“说明”里点“导出我的修改”得到一个 JSON，再运行 `easyread merge ID --from 导出.json`。
 
+**中文 PDF（可选）：** 在“导入论文”中勾选“生成中文 PDF”，每次打开都默认关闭。勾选后选择输出目录；也可点“仅生成翻译后的 PDF”，选择原始 PDF 后直接生成，暂不翻译阅读器正文；已经填入链接时使用该链接，没有输出目录时会提示选择。使用导入框所选模型翻译整篇原始 PDF，保留排版，将 `原文件名-zh.pdf` 自动保存到所选目录；同名文件会自动加序号，不会覆盖。这会额外消耗模型额度，不包含阅读器中的手动修改或笔记。选择 Codex 时沿用已有 ChatGPT 登录；API 模型使用已保存的配置。生成期间可照常阅读，完成后在论文详情里查看保存位置或下载，失败时可查看原因并重试。文献库的 `babeldoc/` 子目录也保留一份结果，已生成的中文 PDF 可直接保存到其他目录，无需再次翻译
+
+先安装 BabelDOC 命令（与 EasyRead 的 Python 环境分开）：
+
+```sh
+uv tool install --python 3.12 --with 'bitstring<5' --with 'onnxruntime==1.23.2' BabelDOC
+```
+
+BabelDOC 0.6.4 目前若装到 `bitstring` 5.0.0，会因缺少 `BitStream` 而无法启动，因此这里限制在 4.x。本机测试使用 ONNX Runtime 1.23.2。已安装过不兼容版本时加 `--reinstall` 重装。翻译会消耗所选模型的额度
+
 想放到网站上（比如 GitHub Pages），用 `easyread demo ID --out 目录`：图片另存成文件、按需加载，还会带上问 AI 的对话记录（只能看）。
 
 ## 开发
@@ -250,8 +200,6 @@ easyread export ID                     # 导出单文件离线 HTML
 
 ```bash
 python -m unittest discover tests         # 翻译调度等单元测试
-node --test tests/desktop/*.cjs           # 桌面端测试
-python scripts/i18n_check.py              # 国际化检查
 node tests/e2e.cjs library/<论文ID>       # 浏览器端到端测试（需要 Playwright 和一篇已译好的论文）
 ```
 

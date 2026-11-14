@@ -213,6 +213,10 @@ def cmd_migrate(a):
 
 
 def main(argv=None):
+    args = sys.argv[1:] if argv is None else argv
+    if args[:1] == ["--pdf-prepare-worker"]:
+        from ..pdf.prepare_worker import main as prepare_main
+        raise SystemExit(prepare_main(args[1:]))
     if sys.stdout is None:  # pythonw 启动时没有控制台
         import os
         sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")

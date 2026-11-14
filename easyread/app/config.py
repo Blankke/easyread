@@ -29,6 +29,10 @@ DEFAULTS = {
     "auto_translate": True,      # 导入后自动开始翻译
     "target": "zh",              # 译文语言，见 langs.py
     "translation_instructions": "",
+    "translation_prompt": None,
+    "translate_figure_text": True,
+    "figure_images": {"enabled": False, "provider": "codex", "base_url": "", "api_key": "", "model": "", "timeout": 600},
+    "opencode": {"command": "", "model": "", "extra_args": [], "timeout": 1200},
     "check_updates": True,       # 打开文献库时问 GitHub 有没有新版本（一天一次），见 updates.py
     "batch_pages": 2,            # 每次交给模型的页数
     "paper_concurrency": 1,      # 默认逐篇处理；手动设1-4，重启生效，会与每篇的分段并发相乘
@@ -41,6 +45,8 @@ DEFAULTS = {
                     "project_sync": False, "project_file_limit": 5,
                     "rotate_enabled": True, "rotate_requests": 12, "rotate_pages": 48, "rotate_messages": 0},
     "codebuddy": {"command": "codebuddy", "model": "", "extra_args": [], "timeout": 1200},
+    "zcode": {"command": "zcode", "model": "", "extra_args": [], "timeout": 1200},
+    "qoder": {"command": "", "model": "", "extra_args": [], "timeout": 1200},
     # 另外三个本机 CLI（见 agent_cli.py）；command 空着按默认名找，model 空着用 CLI 自己的默认
     "grok": {"command": "", "model": "", "reasoning_effort": "", "extra_args": [], "timeout": 1200},
     "agy": {"command": "", "model": "", "reasoning_effort": "", "extra_args": [], "timeout": 1200},
@@ -92,10 +98,10 @@ def save(patch: dict) -> dict:
     return load()
 
 
-def with_key(o: dict) -> dict:
-    """页面提交的 openai 设置 → 要存的样子。每家服务商的 Key 分开存（keys[预设]），换来换去不用重填；
+def with_key(o: dict, section: str = "openai") -> dict:
+    """页面提交的 API 设置 → 要存的样子。按配置区和服务地址分别保存 Key，换来换去不用重填；
     页面发回来的打码 Key 或空 Key 表示不改。"""
-    cur = load()["openai"]
+    cur = load()[section]
     o = dict(o)
     key = o.pop("api_key", None)
     preset = o.get("preset", cur.get("preset")) or ""
@@ -112,12 +118,18 @@ def with_key(o: dict) -> dict:
 def public(cfg: dict) -> dict:
     """给页面看的配置：密钥只露后四位。"""
     from .api_keys import saved_keys
+    from ..translate import prompt_style
     out = copy.deepcopy(cfg)
-    out["openai"]["keys"] = saved_keys(cfg["openai"])
-    key = out["openai"].get("api_key") or ""
-    out["openai"]["api_key"] = ("••••" + key[-4:]) if key else ""
-    out["openai"]["has_key"] = bool(key)
-    out["openai"]["saved_keys"] = [k for k, v in (out["openai"].pop("keys", None) or {}).items() if v]
+    out["translation_prompt_default"] = prompt_style.default(cfg.get("target"))
+    out["translation_prompt_effective"] = prompt_style.effective(cfg)
+    for section in ("openai", "figure_images"):
+        if section not in out:
+            continue
+        out[section]["keys"] = saved_keys(cfg[section])
+        key = out[section].get("api_key") or ""
+        out[section]["api_key"] = ("••••" + key[-4:]) if key else ""
+        out[section]["has_key"] = bool(key)
+        out[section]["saved_keys"] = [k for k, v in (out[section].pop("keys", None) or {}).items() if v]
     return out
 
 

@@ -1,0 +1,27 @@
+html, body { height: 100%; margin: 0; overflow: hidden; }
+body { display: flex; flex-direction: column; font-family: var(--ui); color: var(--ink); background: var(--bg); }
+.tabs-bar { height: 36px; flex: 0 0 36px; display: flex; align-items: stretch; gap: 6px; padding: 0 16px; background: var(--bg); border-bottom: 1px solid var(--rule); }
+#tabs { display: flex; align-items: stretch; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.paper-tab { position: relative; display: flex; flex: 0 0 auto; align-items: center; min-width: 76px; max-width: 230px; }
+.paper-tab.active { background: var(--surface); }
+.paper-tab.active::after { content: ""; position: absolute; bottom: 0; left: 12px; right: 12px; height: 1px; background: var(--accent); opacity: .65; }
+.paper-tab:hover { background: var(--surface); }
+.paper-tab button, #newTab { border: 0; background: transparent; color: var(--ink-2); font: inherit; cursor: pointer; }
+.paper-tab .tab-title { padding: 8px 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: 12px; color: var(--ink-3); }
+.active .tab-title { color: var(--ink); font-weight: 500; }
+.paper-tab:hover .tab-title { color: var(--ink-2); }
+.paper-tab .tab-close { position: relative; flex: 0 0 24px; width: 24px; height: 24px; margin-right: 5px; padding: 0; border-radius: 4px; font-size: 0; opacity: 0; }
+.tab-close::before, .tab-close::after { content: ""; position: absolute; top: 11.5px; left: 6px; width: 12px; height: 1px; background: currentColor; transform: rotate(45deg); }
+.tab-close::after { transform: rotate(-45deg); }
+.paper-tab.active .tab-close { opacity: .45; }
+.paper-tab:hover .tab-close, .paper-tab:focus-within .tab-close { opacity: 1; }
+.tab-close:hover, #newTab:hover { background: var(--accent-soft); color: var(--ink); }
+#newTab { align-self: center; border-radius: 4px; font-size: 18px; line-height: 24px; width: 26px; padding: 0; flex-shrink: 0; color: var(--ink-3); }
+#panes { position: relative; flex: 1; min-height: 0; }
+.paper-pane { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); }
+/* Keep inactive readers laid out so their scroll anchors remain valid. */
+.paper-pane.inactive { visibility: hidden; pointer-events: none; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#message { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--surface); padding: 10px 18px; border-radius: 6px; z-index: 10; }
+@media (max-width: 600px) { .paper-tab { max-width: 165px; } }
+@media (hover: none) { .paper-tab .tab-close { opacity: .6; } }

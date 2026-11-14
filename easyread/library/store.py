@@ -15,6 +15,9 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .fs_retry import retry_write
+from .glossary import valid_entries
+
 SCHEMA = 2
 
 
@@ -31,11 +34,16 @@ class DataReadError(ValueError):
 
 
 def read_json(path: Path, default=None):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return default
+    for attempt in range(10):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return default
+        except PermissionError:  # Windows：另一个线程正用 write_json_atomic 替换这个文件，稍等重试
+            if attempt == 9:
+                raise
+            time.sleep(0.02 * (attempt + 1))
 
 
 def write_json_atomic(path: Path, data) -> None:
@@ -62,8 +70,13 @@ def dir_lock(folder: Path, name: str = ".write.lock", timeout: float = 15.0):
     start = time.time()
     while True:
         try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode())
+            fd = retry_write(lambda: os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            try:
+                retry_write(lambda: os.write(fd, str(os.getpid()).encode()))
+            except OSError:
+                os.close(fd)
+                retry_write(lambda: lock.unlink(missing_ok=True))
+                raise
             os.close(fd)
             break
         except FileExistsError:
@@ -80,7 +93,7 @@ def dir_lock(folder: Path, name: str = ".write.lock", timeout: float = 15.0):
     try:
         yield
     finally:
-        lock.unlink(missing_ok=True)
+        retry_write(lambda: lock.unlink(missing_ok=True))
 
 
 def text_hash(s: str | None) -> str:
@@ -212,9 +225,12 @@ class Workspace:
         defaults = {"reader": empty_reader(), "discussion": empty_discussion(), "layout": {}, "item": {}, "job": {}, "chat": {"messages": []}}
         path = self.root / f"{name}.json"
         try:
-            return read_json(path, defaults.get(name))
+            data = read_json(path, defaults.get(name))
         except (UnicodeError, json.JSONDecodeError) as e:
             raise DataReadError(path) from e
+        if name == "paper" and isinstance(data, dict) and "glossary" in data:
+            data["glossary"] = valid_entries(data["glossary"])
+        return data
 
     def versions(self) -> dict:
         v = {n: file_version(self.root / f"{n}.json") for n in self.PARTS}

@@ -117,6 +117,7 @@ window.PR = window.PR || {};
     } else return PR.api("/api/prefs", { method: "POST", body }).catch(() => { /* 下次改动再存 */ });
   }
   window.addEventListener("pagehide", () => flushPrefs(true));
+  PR.flushPrefs = () => flushPrefs(true);
   /* 桌面版退出前会来问一句：把偏好和补存写回去再停后端（见 electron/main.cjs） */
   if (window.easyreadDesktop && window.easyreadDesktop.onBeforeQuit) {
     window.easyreadDesktop.onBeforeQuit(() => Promise.all([flushPrefs(true), PR.flushProgress?.()]));

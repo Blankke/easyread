@@ -43,6 +43,20 @@ class PageCapTest(unittest.TestCase):
                                           "translation": {"done_pages": []}, "blocks": []})
         return ws
 
+    def test_task_instructions_survive_confirmation_and_retry_but_not_new_jobs(self):
+        ws = self.paper(1)
+        self.jobs.enqueue(ws, translation_extra="Keep agent in English")
+        self.jobs._write(ws, state="confirm")
+        translate_api.enqueue(self.jobs, ws, {"confirmed": True})
+        self.assertEqual(ws.load("job")["translation_extra"], "Keep agent in English")
+        self.jobs._write(ws, state="error", failed={"1": "try again"})
+        translate_api.enqueue(self.jobs, ws, {"failed": True})
+        self.drain()
+        self.assertEqual(self.calls[0]["cfg"]["translation_extra"], "Keep agent in English")
+        self.assertNotIn("translation_extra", self.cfg)
+        translate_api.enqueue(self.jobs, ws, {"pages": "1"})
+        self.assertEqual(ws.load("job")["translation_extra"], "")
+
     def fake_engine(self, cfg, prompt, cwd, images=None, cancel=None, meter=None):
         match = re.search(r"这次只(?:处理|翻译)第 ([\d, ]+) 页", prompt)
         pages = [int(n) for n in match[1].split(",")]

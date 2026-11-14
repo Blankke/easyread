@@ -16,8 +16,8 @@ Set-Location $root
 $env:PYTHONUTF8 = '1'
 
 function Step([int]$Number, [string]$Message) {
-    Write-Progress -Activity '构建 EasyRead Windows 便携版' -Status $Message -PercentComplete (($Number - 1) * 100 / 6)
-    Write-Host "[$Number/6] $Message"
+    Write-Progress -Activity '构建 EasyRead Windows 便携版' -Status $Message -PercentComplete (($Number - 1) * 100 / 7)
+    Write-Host "[$Number/7] $Message"
 }
 
 function Check-Exit([string]$Message) {
@@ -72,15 +72,19 @@ Check-Exit '缺少 Python 构建依赖，请加 -InstallDependencies 重试'
 $builder = Join-Path $root 'node_modules\electron-builder\cli.js'
 if (-not (Test-Path $builder)) { throw '缺少 electron-builder，请加 -InstallDependencies 重试。' }
 
-Step 3 '打包 Python 后端及 PDF、字体、网页资源'
+Step 3 '构建论文笔记编辑器资源'
+& node.exe scripts/build_note_editor.cjs
+Check-Exit '构建笔记编辑器失败'
+
+Step 4 '打包 Python 后端及 PDF、字体、网页资源'
 & python scripts/build_backend.py
 Check-Exit '构建后端失败'
 
-Step 4 '验证打包后端的 PDF 导入、文字提取和图片渲染'
+Step 5 '验证打包后端的 PDF 导入、文字提取和图片渲染'
 & python scripts/smoke_backend.py
 Check-Exit '后端冒烟测试失败'
 
-Step 5 '生成 Windows x64 单文件 EXE'
+Step 6 '生成 Windows x64 单文件 EXE'
 $builderArgs = @($builder, '--win', 'portable', '--x64', '--publish', 'never')
 # 优先复用已经下载且版本匹配的 Windows Electron；否则由构建器下载。
 $electronDir = Join-Path $root 'node_modules\electron\dist-win32-x64'
@@ -92,7 +96,7 @@ if ((Test-Path (Join-Path $electronDir 'electron.exe')) -and (Test-Path (Join-Pa
 & node.exe @builderArgs
 Check-Exit '构建便携 EXE 失败'
 
-Step 6 '核对交付文件'
+Step 7 '核对交付文件'
 $version = (Get-Content (Join-Path $root 'package.json') -Raw | ConvertFrom-Json).version
 $artifact = Join-Path $root "dist\electron\EasyRead-Portable-$version-x64.exe"
 if (-not (Test-Path $artifact)) { throw "未找到构建结果：$artifact" }

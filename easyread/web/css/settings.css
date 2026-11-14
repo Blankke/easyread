@@ -154,3 +154,37 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 
 .mc-cards .mc-tags { min-width: 0; max-width: 100%; box-sizing: border-box; }
 .mc-cards .mc-tags .badge { box-sizing: border-box; min-width: 0; max-width: 100%; }
+
+/* Keep the original dialog size and make common translation controls easy to scan. */
+.mc-cards { gap: 8px; margin-bottom: 8px; }
+.mc-cards .mc { padding: 10px 12px; border-radius: 8px; }
+.mc-cards .mc b { font-weight: 500; }
+.mc-cards .mc-tags { padding-top: 5px; }
+.mc-cards .mc.on { box-shadow: inset 0 0 0 1px var(--accent); }
+.model-add { display: inline-flex; align-items: center; gap: 5px; padding: 7px 0; margin: 0 0 10px; color: var(--accent); font: 12.5px var(--ui); }
+.translation-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.translation-heading .set-h { margin: 0; letter-spacing: 0; font-size: 13px; color: var(--ink-2); }
+.translation-heading .btn { font-size: 12px; }
+.settings-sec > .test-result { margin: 0; }
+.settings-sec > .test-result:not(:empty) { margin-bottom: 12px; overflow-wrap: anywhere; }
+.settings-sec .translation-limits { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+.translation-limits .field { min-width: 0; }
+.translation-options { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 2px 0 16px; }
+.translation-options .check { margin: 0; }
+.translation-instructions { margin-bottom: 8px; }
+.set-body { min-height: 0; }
+@media (max-width: 480px) {
+  .set-head, .set-body, .set-foot { padding-left: 16px; padding-right: 16px; }
+  .set-tabs { min-width: 0; max-width: 100%; }
+  .set-tabs button { flex: none; padding-left: 8px; padding-right: 8px; }
+  .translation-limits { gap: 0 12px; }
+}
+.translation-prompt-row { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-top:16px; }
+.translation-dialog { z-index:1000; }
+.translation-dialog .dialog { width:min(620px, 94vw); max-height:90vh; overflow:auto; }
+.translation-dialog .hint { margin:0 0 14px; }
+.translation-prompt-editor { width:100%; min-height:260px; max-height:55vh; resize:vertical; line-height:1.7; }
+.translation-extra { margin:14px 0; }
+.translation-extra summary { cursor:pointer; color:var(--muted); font-size:13px; }
+.translation-extra textarea { display:block; width:100%; margin-top:10px; resize:vertical; }
+.translation-extra .hint { margin:8px 0 0; }
