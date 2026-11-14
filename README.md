@@ -144,6 +144,23 @@ Test-Path .\node_modules\electron\dist\electron.exe
 npm run dev
 ```
 
+如果 `npm ci` 报 `Downloading Electron binary... fetch failed`，说明 npm 能下载包但无法访问 Electron 的 GitHub 二进制地址。可临时切换镜像后重试：
+
+```powershell
+$env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
+Remove-Item -Recurse -Force .\node_modules\electron
+npm ci
+npm run dev
+```
+
+如果所在网络需要代理，先设置实际的代理地址，再执行上面的命令：
+
+```powershell
+$env:HTTP_PROXY = 'http://代理地址:端口'
+$env:HTTPS_PROXY = 'http://代理地址:端口'
+$env:ELECTRON_GET_USE_PROXY = 'true'
+```
+
 生成可分发安装包：
 
 ```bash
