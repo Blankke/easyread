@@ -135,6 +135,15 @@ python -m pip install pyinstaller
 npm run dev
 ```
 
+如果同一份工作区同时在 WSL/Linux 和 PowerShell 中使用，请分别安装依赖；Electron 的 `node_modules` 不能跨平台复用。Windows 下若出现找不到 `node_modules\electron\dist\electron.exe`，在 PowerShell 执行：
+
+```powershell
+Remove-Item -Recurse -Force .\node_modules
+npm ci
+Test-Path .\node_modules\electron\dist\electron.exe
+npm run dev
+```
+
 生成可分发安装包：
 
 ```bash
