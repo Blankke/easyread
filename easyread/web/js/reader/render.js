@@ -98,7 +98,13 @@
       const items = Array.isArray(b.items) ? b.items : [];
       return "<" + tag + ">" + items.map((it, i) => "<li>" + zhDiv(b.id + "#" + i) + enIfZh(b.id + "#" + i, it && it.en) + "</li>").join("") + "</" + tag + ">";
     },
-    math: (b) => '<div class="math-row"><div class="math-body">' + PR.tex(b.tex, true) + "</div>" + (b.tag ? '<div class="math-tag">(' + PR.esc(b.tag) + ")</div>" : "") + "</div>",
+    math(b) {
+      const label = PR.esc(PR.t("复制公式（LaTeX）"));
+      const copy = typeof b.tex === "string" && b.tex.trim() ? '<button type="button" class="btn icon math-copy" data-t="copy-math" title="' + label + '" aria-label="' + label + '">' + PR.icon("copy", "sm") + "</button>" : "";
+      // 序号和复制按钮固定在右侧，长公式在独立容器中缩放或滚动。
+      return '<div class="math-row"><div class="math-body">' + PR.tex(b.tex, true) + '</div><div class="math-tools">' +
+        (b.tag ? '<div class="math-tag">(' + PR.esc(b.tag) + ")</div>" : "") + copy + "</div></div>";
+    },
     table(b) {
       const al = (b.align || "").split("");
       const style = (i) => (al[i] ? ' style="text-align:' + ({ l: "left", r: "right", c: "center" }[al[i]] || "left") + '"' : "");
@@ -144,7 +150,7 @@
   const edited = (b) => PR.blockKeys(b).some((k) => PR.editOf(k));
 
   function sectionHtml(b, extraClass, pageMark) {
-    return '<section class="' + blockClass(b) + (extraClass || "") + '" id="b-' + PR.esc(b.id) + '" data-id="' + PR.esc(b.id) + '">' +
+    return '<section class="' + blockClass(b) + (extraClass || "") + '" id="b-' + PR.esc(b.id) + '" data-id="' + PR.esc(b.id) + '" data-page="' + PR.esc(b.page || "") + '">' +
       (pageMark ? '<button class="pgmark" data-t="page" title="' + PR.t("看原文第 {n} 页", { n: b.page }) + '">p.' + b.page + "</button>" : "") +
       R[b.type](b) + (edited(b) ? '<span class="edited-dot" title="' + PR.t("这里有你改过的译文") + '"></span>' : "") + "</section>";
   }
@@ -220,7 +226,8 @@
     return '<div class="pending-pages"><div class="pending">' + head + recovery + "</div>" + miss.map(origFig).join("") + "</div>";
   }
 
-  PR.renderPaper = function () {
+  let renderedHtml = new Map();
+  PR.renderPaper = function (keepNodes = false) {
     buildIndex();
     let html = headHtml() + (PR.store.mode === "server" ? PR.pageCapHtml(S.job) : ""), appendixSeen = false, lastPage = 0;
     const done = new Set((S.paper.translation || {}).done_pages || []);
@@ -242,7 +249,37 @@
         html += blockErrorHtml(b, error);
       }
     }
-    PR.$("#paper").innerHTML = html + pendingHtml(lastPage);
+    const paper = PR.$("#paper");
+    const nextHtml = html + pendingHtml(lastPage);
+    if (!keepNodes || !paper.children) {
+      paper.innerHTML = nextHtml;
+      renderedHtml = new Map(Array.from(paper.children || [], (el) => [el.id, el.outerHTML]));
+    } else {
+      // 后台译页只替换变化的块。保留旧节点上的图片加载状态、选区和交互状态。
+      const template = document.createElement("template");
+      template.innerHTML = nextHtml;
+      const oldById = new Map(Array.from(paper.children).filter((el) => el.id).map((el) => [el.id, el]));
+      const oldPages = new Map(Array.from(paper.querySelectorAll(".orig-page")).map((el) => [el.id, el]));
+      const nextRendered = new Map();
+      let cursor = paper.firstElementChild;
+      for (const fresh of Array.from(template.content.children)) {
+        const source = fresh.outerHTML;
+        const old = fresh.id && oldById.get(fresh.id);
+        const node = old && renderedHtml.get(fresh.id) === source ? old : fresh;
+        // 任务文案变化时，原页图片仍用已加载的节点，避免每次轮询重新解码并闪烁。
+        if (node === fresh && fresh.classList.contains("pending-pages")) {
+          for (const page of Array.from(fresh.querySelectorAll(".orig-page"))) {
+            const previous = oldPages.get(page.id);
+            if (previous && previous.outerHTML === page.outerHTML) page.replaceWith(previous);
+          }
+        }
+        if (node !== cursor) paper.insertBefore(node, cursor);
+        else cursor = cursor.nextElementSibling;
+        if (fresh.id) nextRendered.set(fresh.id, source);
+      }
+      while (cursor) { const next = cursor.nextElementSibling; cursor.remove(); cursor = next; }
+      renderedHtml = nextRendered;
+    }
     // 一段译文都没有（只读原文）：顶栏的“译文 / 对照”没意义，藏起来
     document.body.classList.toggle("en-only", (S.paper.blocks || []).length > 0 && !(S.paper.blocks || []).some((b) => b && PR.hasZh(b)));
     // 译文语言决定正文字体（base.css 按 data-target 换字体）；1.3 以前译的论文没记语言，都是中文
@@ -309,12 +346,30 @@
   PR.on("block-rendered", (id) => PR.fitWide(document.getElementById("b-" + id)));
 
   /* 保持阅读位置不动地整页重排 */
+  let anchorResetFrame = 0;
   PR.rerenderKeepingPlace = function () {
+    const line = PR.readingLine ? PR.readingLine() : innerHeight * 0.3;
+    const page = Array.from(document.querySelectorAll("#paper .orig-page"))
+      .find((el) => { const box = el.getBoundingClientRect(); return box.top <= line && box.bottom >= line; });
     const anchor = PR.readingBlock && PR.readingBlock();
-    const node = anchor && document.getElementById("b-" + anchor);
+    const node = page || (anchor && document.getElementById("b-" + anchor));
     const before = node ? node.getBoundingClientRect().top : 0;
-    PR.renderPaper();
-    const after = anchor && document.getElementById("b-" + anchor);
-    if (after) window.scrollBy(0, after.getBoundingClientRect().top - before);
+    // 更新期间关闭浏览器自动滚动锚定，由同一视口锚点统一校正位置。
+    const root = document.documentElement;
+    const overflowAnchor = anchorResetFrame ? null : root.style.overflowAnchor;
+    root.style.overflowAnchor = "none";
+    try {
+      PR.renderPaper(true);
+      const pageNumber = page && Number(page.id.slice(5));
+      const after = page && document.getElementById(page.id) ||
+        (pageNumber && document.querySelector('#paper > .blk[data-page="' + pageNumber + '"]')) ||
+        (anchor && document.getElementById("b-" + anchor));
+      if (after) window.scrollBy(0, after.getBoundingClientRect().top - before);
+    } finally {
+      if (!anchorResetFrame) anchorResetFrame = requestAnimationFrame(() => {
+        root.style.overflowAnchor = overflowAnchor;
+        anchorResetFrame = 0;
+      });
+    }
   };
 })(window.PR);

@@ -94,6 +94,17 @@
     navigator.clipboard.writeText(PR.plain(t || (b.tex ? "$$" + b.tex + "$$" : ""))).then(() => PR.toast(PR.t("已复制")));
   }
 
+  async function copyMath(b) {
+    if (b.type !== "math" || typeof b.tex !== "string" || !b.tex.trim()) return;
+    try {
+      // 直接复制 KaTeX 使用的源码，保留反斜杠和多行结构，不混入序号或 Markdown 定界符。
+      await navigator.clipboard.writeText(b.tex);
+      PR.toast(PR.t("已复制公式 LaTeX"));
+    } catch (error) {
+      PR.toast(PR.t("复制公式失败，请重试"));
+    }
+  }
+
   /* 点击段落 = 设为当前段并出操作条；再点一次收起 */
   document.addEventListener("click", (e) => {
     if (e.target.closest("#blockbar, #selbar, #popover, .menu")) return;
@@ -113,7 +124,7 @@
     blockMenu(blk.dataset.id, { x: e.clientX, y: e.clientY });
   });
 
-  /* 段落里的按钮：页码、角标、过期提示 */
+  /* 段落里的按钮：页码、角标、过期提示、公式复制 */
   document.addEventListener("click", (e) => {
     const cap = e.target.closest("#paper [data-page-cap]");
     if (cap) return PR.handlePageCap(cap, PR.pid, S.job, () => PR.poll());
@@ -122,6 +133,7 @@
     const host = t.closest(".blk");
     const id = host && host.dataset.id;
     const b = PR.blockById[id];
+    if (t.dataset.t === "copy-math" && b) return copyMath(b);
     if (t.dataset.t === "page" && b) PR.openPage(b.page, id);
     if (t.dataset.t === "pin") host.classList.toggle("notes-open");
     if (t.dataset.t === "stale") PR.showStale(t.closest(".zh"));

@@ -118,7 +118,10 @@ body.en-only #paper { font-family: var(--serif-en); }  /* 只读英文原文：�
 .math-body { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; padding: .25em 0; text-align: center; scrollbar-width: thin; }
 .math-body .katex-display { margin: 0; }
 .math-body .katex { font-size: 1.08em; }
+.math-tools { display: flex; flex: none; align-items: center; gap: .35em; }
 .math-tag { flex: none; min-width: 2.4em; text-align: right; color: var(--ink-3); font: .88em/1 var(--serif-en); }
+.math-copy { color: var(--ink-3); }
+.math-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .katex { font-size: 1.06em; }
 .zh .katex, .caption .katex { font-size: 1.02em; }
 
@@ -280,7 +283,7 @@ textarea.editor { display: block; width: 100%; resize: none; overflow: hidden; b
   .paper-head h1 { font-size: 1.5em; }
 }
 @media print {
-  .topbar, #drawer, .side-panel, #margin, .note-pin, #progress, .pgmark { display: none !important; }
+  .topbar, #drawer, .side-panel, #margin, .note-pin, #progress, .pgmark, .math-copy { display: none !important; }
   #stage { display: block; padding: 0; width: auto; }
 }
 /* 在线演示的顶栏标记 */
